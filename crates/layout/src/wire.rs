@@ -37,6 +37,39 @@ pub fn decode(input: &[u8]) -> Result<DocLayout, serde_json::Error> {
     Ok(DocLayout { pages, index, ..Default::default() })
 }
 
+// Keep the JSON v1 reference intact. Named maps preserve serde defaults,
+// optional fields and tagged enums in the document types.
+#[cfg(feature = "wire-layout-msgpack")]
+const COMPACT_MAGIC: &[u8] = b"FVLW\x02";
+
+#[cfg(feature = "wire-layout-msgpack")]
+pub fn encode_compact(layout: &DocLayout) -> Result<Vec<u8>, String> {
+    use serde::Serialize;
+    let mut writer = Bounded(COMPACT_MAGIC.to_vec());
+    let mut encoder = rmp_serde::Serializer::new(&mut writer)
+        .with_struct_map()
+        .with_human_readable();
+    layout.pages.serialize(&mut encoder).map_err(|e| e.to_string())?;
+    Ok(writer.0)
+}
+
+#[cfg(feature = "wire-layout-msgpack")]
+pub fn decode_compact(input: &[u8]) -> Result<DocLayout, String> {
+    use serde::Deserialize;
+    if input.len() > MAX_WIRE_BYTES {
+        return Err("Layout exceeds wire limit".into());
+    }
+    let body = input.strip_prefix(COMPACT_MAGIC).ok_or("Invalid compact layout version")?;
+    let mut decoder = rmp_serde::Deserializer::new(io::Cursor::new(body)).with_human_readable();
+    decoder.set_max_depth(128);
+    let pages = Vec::<Page>::deserialize(&mut decoder).map_err(|e| e.to_string())?;
+    if decoder.get_ref().position() != body.len() as u64 {
+        return Err("Trailing bytes in compact layout".into());
+    }
+    let index = crate::pass::index_lines(&pages);
+    Ok(DocLayout { pages, index, ..Default::default() })
+}
+
 // A process-local FaceRef is never sent over the boundary. Only static build-time
 // font identities are permitted; missing or noncanonical keys are errors.
 pub(crate) mod face {
