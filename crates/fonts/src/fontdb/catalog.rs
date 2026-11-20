@@ -119,18 +119,31 @@ impl FontDb {
         self.add_fonts(vec![(bytes, None)])
     }
 
+    /// Register a compiled-in font without allocating a second copy of its bytes.
+    /// Like add_font, skip faces already present and preserve registration order.
+    pub fn add_static_font(&self, bytes: &'static [u8]) -> usize {
+        self.add_font_data([(FontBytes::Static(bytes), None)])
+    }
+
     /// Add the faces of several font files at once: lookups see all of them or none, never a
     /// family with only some of its styles (which would resolve, and be cached as, the wrong
     /// face). A file given a `name` its faces don't go by (a document's font table's, see
     /// [`FontDb::add_document_fonts`]) has them go by that name instead. Faces already present
     /// (same family and style) are skipped. Returns how many were added.
     pub(super) fn add_fonts(&self, files: Vec<(Vec<u8>, Option<String>)>) -> usize {
+        self.add_font_data(files.into_iter().map(|(bytes, name)| (FontBytes::Owned(Arc::new(bytes)), name)))
+    }
+
+    fn add_font_data(&self, files: impl IntoIterator<Item = (FontBytes, Option<String>)>) -> usize {
         let mut new = Vec::new();
-        for (bytes, name) in files {
-            let data = Arc::new(bytes);
+        for (data, name) in files {
+            let bytes = match &data {
+                FontBytes::Static(b) => *b,
+                FontBytes::Owned(v) => v.as_slice(),
+            };
             let name: Option<String> = name.map(|n| n.trim().chars().take(MAX_FAMILY_NAME).collect()).filter(|n: &String| !n.is_empty());
-            for f in enumerate_faces(&data, MAX_FILE_FACES) {
-                if let Some(mut face) = make_face(FontBytes::Owned(data.clone()), f.index, f.family, f.style, f.legacy, f.coords) {
+            for f in enumerate_faces(bytes, MAX_FILE_FACES) {
+                if let Some(mut face) = make_face(data.clone(), f.index, f.family, f.style, f.legacy, f.coords) {
                     face.local_names = f.local;
                     if let Some(n) = name.as_deref().filter(|n| !face.named(n) && !face.local_names.iter().any(|l| l.name.eq_ignore_ascii_case(n))) {
                         face.family = n.to_string();

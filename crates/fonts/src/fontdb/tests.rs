@@ -408,3 +408,19 @@ fn named_instances_and_collection_members_are_capped() {
     // (under 0.1 s on a loaded machine) only backs up "read once", with room for a busy CI.
     assert!(started.elapsed() < std::time::Duration::from_secs(10), "{:?}", started.elapsed());
 }
+
+#[test]
+fn static_font_registration_borrows_bytes_and_preserves_deduplication() {
+    let bytes: &'static [u8] = Box::leak(hint_reliant_font(660).into_boxed_slice());
+    let db = FontDb::with_font_dirs(vec![]);
+    let before = db.loaded_font_bytes();
+    assert!(db.add_static_font(bytes) > 0);
+    let face = db.face("MingLiU JBMono", "Regular");
+    assert_eq!(face.family, "MingLiU JBMono");
+    assert_eq!(face.data().as_ptr(), bytes.as_ptr());
+    assert_eq!(face.data(), bytes);
+    assert_eq!(db.loaded_font_bytes(), before);
+    assert_eq!(db.add_static_font(bytes), 0);
+    assert_eq!(db.add_font(bytes.to_vec()), 0);
+    assert!(!face.glyph_outline(face.glyph_for('a')).elements().is_empty());
+}
