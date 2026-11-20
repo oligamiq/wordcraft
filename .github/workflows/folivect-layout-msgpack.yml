@@ -25,3 +25,8 @@ jobs:
           rustup target add --toolchain 1.98.1 wasm32-unknown-unknown
           export RUSTUP_TOOLCHAIN=1.98.1 CARGO_BUILD_JOBS=2
           cargo check --locked -p wordcraft-layout --target wasm32-unknown-unknown --features wire-layout-msgpack
+      - name: Measure native release codec costs (diagnostic)
+        run: |
+          set -euo pipefail
+          export RUSTUP_TOOLCHAIN=1.98.1 CARGO_BUILD_JOBS=2
+          cargo test --release --locked -p wordcraft-layout --features wire-layout-msgpack --test wire_layout compare_wire_codec_costs -- --ignored --nocapture
