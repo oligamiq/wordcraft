@@ -21,6 +21,8 @@ mod fallback;
 mod fallback_data;
 mod lookup;
 mod names;
+mod static_key;
+pub use static_key::StaticFaceKey;
 
 use face::{BUNDLED, FontBytes};
 pub use face::{FALLBACK_FAMILY, FaceRef, FontFace, bundled};

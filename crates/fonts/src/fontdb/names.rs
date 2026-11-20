@@ -392,6 +392,7 @@ pub(super) fn make_face(
         instance,
         bytes,
         index,
+        static_key: std::sync::OnceLock::new(),
         bmp: std::sync::OnceLock::new(),
         outline_hinter: std::sync::OnceLock::new(),
         hint_draws: Default::default(),

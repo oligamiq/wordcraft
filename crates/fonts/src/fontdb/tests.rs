@@ -424,3 +424,34 @@ fn static_font_registration_borrows_bytes_and_preserves_deduplication() {
     assert_eq!(db.add_font(bytes.to_vec()), 0);
     assert!(!face.glyph_outline(face.glyph_for('a')).elements().is_empty());
 }
+
+#[test]
+fn static_keys_resolve_across_catalogs_without_using_process_ids() {
+    let a = FontDb::with_font_dirs(vec![]);
+    let b = FontDb::with_font_dirs(vec![]);
+    let left = a.face(FALLBACK_FAMILY, "Regular");
+    let right = b.face(FALLBACK_FAMILY, "Regular");
+    assert_ne!(left.id(), right.id());
+    let key = left.static_face_key().unwrap();
+    assert_eq!(key.sha256(), &[0x46, 0x44, 0xc8, 0x1b, 0x86, 0xec, 0x9c, 0xaa, 0xa7, 0x6b, 0x63, 0x48, 0x89, 0x96, 0x8e, 0xd3, 0xc4, 0xf4, 0xf5, 0x2f, 0x05, 0x48, 0x55, 0x93, 0x3a, 0xcc, 0x7c, 0x2b, 0x21, 0xe5, 0x3b, 0x0f]);
+    assert_eq!(right.static_face_key(), Some(key));
+    assert_eq!(b.static_face_by_key(key).unwrap().id(), right.id());
+    assert_ne!(a.face(FALLBACK_FAMILY, "Bold").static_face_key(), Some(key));
+    assert!(b.static_face_by_key(&StaticFaceKey::new([0; 32], 0, &[]).unwrap()).is_none());
+}
+
+#[test]
+fn static_keys_never_resolve_owned_font_bytes_even_if_identical() {
+    let bytes: &'static [u8] = Box::leak(hint_reliant_font(660).into_boxed_slice());
+    let public = FontDb::with_font_dirs(vec![]);
+    let owned = FontDb::with_font_dirs(vec![]);
+    assert!(public.add_static_font(bytes) > 0);
+    assert!(owned.add_font(bytes.to_vec()) > 0);
+    let a = public.face("MingLiU JBMono", "Regular");
+    let b = owned.face("MingLiU JBMono", "Regular");
+    assert_eq!(a.data(), b.data());
+    let key = a.static_face_key().unwrap();
+    assert!(b.static_face_key().is_none());
+    assert!(owned.static_face_by_key(key).is_none());
+    assert_eq!(public.static_face_by_key(key).unwrap().id(), a.id());
+}

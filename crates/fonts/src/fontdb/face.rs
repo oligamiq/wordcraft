@@ -1,4 +1,6 @@
 use super::names::{LocalName, east_asian_font};
+use super::StaticFaceKey;
+use sha2::{Digest, Sha256};
 use super::{
     Arc, AtomicU32, BezPath, DrawSettings, Engine, GlyphId, Hinting, HintingInstance, HintingOptions, Location, LocationRef, MetadataProvider,
     Ordering, OutlinePen, RwLock, Size, Target,
@@ -57,6 +59,7 @@ pub struct FontFace {
     pub weight: f32,
     pub italic: bool,
     pub(super) bytes: FontBytes,
+    pub(super) static_key: std::sync::OnceLock<Option<StaticFaceKey>>,
     pub(super) index: u32,
     pub upem: f64,
     /// Ascender in font units (positive = up).
@@ -179,6 +182,18 @@ impl std::fmt::Debug for FontFace {
 }
 
 impl FontFace {
+    /// Content identity for static font bytes only. Owned/document/system fonts are deliberately
+    /// excluded, even when their bytes equal a bundled font. Callers must separately restrict
+    /// the static catalog to their approved public build-time resources.
+    pub fn static_face_key(&self) -> Option<&StaticFaceKey> {
+        let FontBytes::Static(bytes) = &self.bytes else {
+            return None;
+        };
+        self.static_key
+            .get_or_init(|| StaticFaceKey::new(Sha256::digest(bytes).into(), self.index, &self.coords))
+            .as_ref()
+    }
+
     pub fn data(&self) -> &[u8] {
         match &self.bytes {
             FontBytes::Static(b) => b,

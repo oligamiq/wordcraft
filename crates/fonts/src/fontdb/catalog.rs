@@ -113,6 +113,22 @@ impl FontDb {
         v.into_iter().map(|t| t.2).collect()
     }
 
+    /// Resolve a static face by exact content identity, never by a process-local ID or by
+    /// a family/style fallback. Owned faces cannot satisfy a static identity.
+    pub fn static_face_by_key(&self, key: &super::StaticFaceKey) -> Option<Arc<FontFace>> {
+        self.read_faces()
+            .iter()
+            .find(|face| face.index() == key.index() && face.static_face_key() == Some(key))
+            .cloned()
+    }
+
+    /// Precompute identities of the static catalog from the build-time resources only.
+    pub fn prewarm_static_face_keys(&self) {
+        for face in self.read_faces().iter() {
+            let _ = face.static_face_key();
+        }
+    }
+
     /// Add a user font (TTF/OTF/TTC bytes). Returns the number of faces added (0 if unparseable or
     /// every face was already present).
     pub fn add_font(&self, bytes: Vec<u8>) -> usize {
