@@ -1,10 +1,15 @@
 //! Private uncompressed dictionary packet. Tables are request-local and ordered
 //! by first occurrence. No pointers, process-local font IDs or global caches cross the wire.
 use super::{Bounded, MAX_WIRE_BYTES};
-use crate::para::{Cluster, Glyph, StyleRun, wire::ParaRecord};
+use crate::para::{ClKind, Cluster, Glyph, StyleRun, wire::ParaRecord};
 use crate::{DocLayout, Page, ParaLayout, Placed};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, io::Cursor, sync::Arc};
+use std::{
+    collections::HashMap,
+    hash::{DefaultHasher, Hash, Hasher},
+    io::Cursor,
+    sync::Arc,
+};
 use wordcraft_doc::{Path, StoryRef, props::TextDirection, resolve::ResolvedPara};
 use wordcraft_geom::{Rect, Spin};
 
@@ -62,12 +67,97 @@ impl<T: Serialize + Clone> Pool<T> {
     }
 }
 
+// Compare typed fields, including the exact IEEE 754 bit patterns. Hash collisions
+// only select candidates: equality must still hold across every field.
+trait DirectKey {
+    fn hash_fields(&self, h: &mut DefaultHasher);
+    fn same_fields(&self, other: &Self) -> bool;
+}
+impl DirectKey for Glyph {
+    fn hash_fields(&self, h: &mut DefaultHasher) {
+        let Self { gid, dx, dy } = self;
+        (gid, dx.to_bits(), dy.to_bits()).hash(h);
+    }
+    fn same_fields(&self, other: &Self) -> bool {
+        let Self { gid, dx, dy } = self;
+        let Self { gid: og, dx: ox, dy: oy } = other;
+        gid == og && dx.to_bits() == ox.to_bits() && dy.to_bits() == oy.to_bits()
+    }
+}
+fn kind_key(kind: ClKind) -> (u8, usize) {
+    match kind {
+        ClKind::Text => (0, 0),
+        ClKind::Space => (1, 0),
+        ClKind::Tab => (2, 0),
+        ClKind::LineBreak => (3, 0),
+        ClKind::PageBreak => (4, 0),
+        ClKind::ColumnBreak => (5, 0),
+        ClKind::Object(id) => (6, id),
+        ClKind::Marker => (7, 0),
+    }
+}
+impl DirectKey for Cluster {
+    fn hash_fields(&self, h: &mut DefaultHasher) {
+        let Self { start, end, adv, kind, style, g0, g1, break_after, obj_h, obj_d, dot } = self;
+        (start, end, adv.to_bits(), kind_key(*kind), style, g0, g1, break_after, obj_h.to_bits(), obj_d.to_bits(), dot).hash(h);
+    }
+    fn same_fields(&self, other: &Self) -> bool {
+        let Self { start, end, adv, kind, style, g0, g1, break_after, obj_h, obj_d, dot } = self;
+        let Self { start: os, end: oe, adv: oa, kind: ok, style: sty, g0: og0, g1: og1, break_after: ob, obj_h: oh, obj_d: od, dot: ot } = other;
+        start == os
+            && end == oe
+            && adv.to_bits() == oa.to_bits()
+            && kind == ok
+            && style == sty
+            && g0 == og0
+            && g1 == og1
+            && break_after == ob
+            && obj_h.to_bits() == oh.to_bits()
+            && obj_d.to_bits() == od.to_bits()
+            && dot == ot
+    }
+}
+struct DirectPool<T> {
+    values: Vec<Vec<T>>,
+    ids: HashMap<u64, Vec<u32>>,
+}
+impl<T> Default for DirectPool<T> {
+    fn default() -> Self {
+        Self { values: Vec::new(), ids: HashMap::new() }
+    }
+}
+impl<T: DirectKey + Clone> DirectPool<T> {
+    fn intern(&mut self, value: &[T]) -> Result<u32, String> {
+        let mut hasher = DefaultHasher::new();
+        value.len().hash(&mut hasher);
+        for entry in value {
+            entry.hash_fields(&mut hasher);
+        }
+        self.intern_with_hash(value, hasher.finish())
+    }
+
+    fn intern_with_hash(&mut self, value: &[T], hash: u64) -> Result<u32, String> {
+        if let Some(candidates) = self.ids.get(&hash) {
+            for &id in candidates {
+                let candidate = lookup(&self.values, id)?;
+                if candidate.len() == value.len() && candidate.iter().zip(value).all(|(a, b)| a.same_fields(b)) {
+                    return Ok(id);
+                }
+            }
+        }
+        let id = u32::try_from(self.values.len()).map_err(|_| "Too many dictionary entries")?;
+        self.values.push(value.to_vec());
+        self.ids.entry(hash).or_default().push(id);
+        Ok(id)
+    }
+}
+
 #[derive(Default)]
 struct Builder {
     rp: Pool<ResolvedPara>,
     styles: Pool<StyleRun>,
-    glyphs: Pool<Vec<Glyph>>,
-    clusters: Pool<Vec<Cluster>>,
+    glyphs: DirectPool<Glyph>,
+    clusters: DirectPool<Cluster>,
     paras: Vec<ParaRecord>,
     para_ids: HashMap<*const ParaLayout, u32>,
 }
@@ -199,4 +289,35 @@ pub fn decode_interned(input: &[u8]) -> Result<DocLayout, String> {
         .collect::<Result<Vec<_>, String>>()?;
     let index = crate::pass::index_lines(&pages);
     Ok(DocLayout { pages, index, ..Default::default() })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn direct_pool_distinguishes_float_bits_and_retains_first_occurrence() {
+        let glyph = |dx: f32| Glyph { gid: 12, dx, dy: 0.0 };
+        let mut pool = DirectPool::<Glyph>::default();
+        assert_eq!(pool.intern(&[glyph(0.0)]).unwrap(), 0);
+        assert_eq!(pool.intern(&[glyph(-0.0)]).unwrap(), 1);
+        assert_eq!(pool.intern(&[glyph(0.0)]).unwrap(), 0);
+        assert_eq!(pool.intern(&[glyph(f32::from_bits(0x7fc00001))]).unwrap(), 2);
+        assert_eq!(pool.intern(&[glyph(f32::from_bits(0x7fc00002))]).unwrap(), 3);
+        assert_eq!(pool.intern(&[glyph(f32::from_bits(0x7fc00001))]).unwrap(), 2);
+        assert_eq!(pool.values.len(), 4);
+    }
+
+    #[test]
+    fn direct_pool_checks_full_clusters_even_on_hash_collision() {
+        let cluster =
+            |kind| Cluster { start: 0, end: 1, adv: 1.0, kind, style: 0, g0: 0, g1: 1, break_after: false, obj_h: 0.0, obj_d: 0.0, dot: false };
+        let mut pool = DirectPool::<Cluster>::default();
+        let a = [cluster(ClKind::Object(3))];
+        let b = [cluster(ClKind::Object(5))];
+        assert_eq!(pool.intern_with_hash(&a, 10).unwrap(), 0);
+        assert_eq!(pool.intern_with_hash(&b, 10).unwrap(), 1);
+        assert_eq!(pool.intern_with_hash(&a, 10).unwrap(), 0);
+        assert_eq!(pool.values.len(), 2);
+    }
 }
