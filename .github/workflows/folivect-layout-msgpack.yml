@@ -1,0 +1,27 @@
+name: Folivect compact layout experiment
+on:
+  push:
+    branches: [folivect/layout-wire-msgpack]
+permissions:
+  contents: read
+jobs:
+  compact-layout:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Test JSON and compact layout formats
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.98.1 --profile minimal
+          export RUSTUP_TOOLCHAIN=1.98.1 CARGO_BUILD_JOBS=2
+          cargo test --locked -p wordcraft-layout --features wire-layout-msgpack --lib wire::tests
+          cargo test --locked -p wordcraft-layout --features wire-layout-msgpack --test wire_layout
+      - name: Check browser target
+        run: |
+          set -euo pipefail
+          rustup target add --toolchain 1.98.1 wasm32-unknown-unknown
+          export RUSTUP_TOOLCHAIN=1.98.1 CARGO_BUILD_JOBS=2
+          cargo check --locked -p wordcraft-layout --target wasm32-unknown-unknown --features wire-layout-msgpack
