@@ -45,6 +45,7 @@ pub use proof::{ProofRun, is_list_item, paragraph_issues, proof_runs, proof_text
 
 /// A laid-out paragraph.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "wire-layout", derive(serde::Serialize, serde::Deserialize))]
 pub struct ParaLayout {
     pub rp: ResolvedPara,
     pub styles: Vec<StyleRun>,

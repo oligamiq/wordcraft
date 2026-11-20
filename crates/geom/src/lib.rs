@@ -200,7 +200,7 @@ pub fn normalize_degrees(deg: f32) -> f32 {
 /// How a drawing is turned about its centre: mirrored first (`flip_h` left to right, `flip_v` top
 /// to bottom), then rotated `deg` degrees clockwise (page space, y down), as DrawingML's `a:xfrm`
 /// `flipH`, `flipV` and `rot` say (ECMA-376 §20.1.7.6).
-#[derive(Clone, Copy, Debug, PartialEq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct Spin {
     pub deg: f32,
     pub flip_h: bool,

@@ -2,6 +2,7 @@ use super::{Arc, Border, ParaLayout, Path, Rect, Rgb, Spin, StoryRef, TextDirect
 
 /// Something placed on a page (page coordinates, points, y down).
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "wire-layout", derive(serde::Serialize, serde::Deserialize))]
 pub enum Placed {
     /// Lines `l0..l1` of a paragraph; `y` is the top of line `l0`; `x` the column's left edge.
     /// Turned lines (a table cell's text direction) run as `turn` says from the page point
@@ -225,6 +226,7 @@ pub fn turn_rect(turn: TextDirection, x: f32, y: f32, r: Rect) -> Rect {
 
 /// Which header/footer of its section a page shows ([`Page::hf_slot`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "wire-layout", derive(serde::Serialize, serde::Deserialize))]
 pub enum HfSlot {
     #[default]
     Default,

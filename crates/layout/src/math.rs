@@ -31,8 +31,10 @@ use state::Ctx;
 
 /// Something to draw.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "wire-layout", derive(serde::Serialize, serde::Deserialize))]
 pub enum MItem {
     Glyphs {
+        #[cfg_attr(feature = "wire-layout", serde(with = "crate::wire::face"))]
         face: FaceRef,
         size: f32,
         color: Rgb,
@@ -90,6 +92,7 @@ impl MItem {
 /// A caret position inside an equation, where it is drawn: `x`, the baseline `y` (up from the
 /// equation's baseline) and the caret's extent above (`a`) and below (`d`) it.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "wire-layout", derive(serde::Serialize, serde::Deserialize))]
 pub struct Slot {
     pub path: Vec<(usize, usize)>,
     pub off: usize,
@@ -101,6 +104,7 @@ pub struct Slot {
 
 /// A laid-out equation.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "wire-layout", derive(serde::Serialize, serde::Deserialize))]
 pub struct MathLayout {
     pub width: f32,
     /// Extent above and below the baseline, points.

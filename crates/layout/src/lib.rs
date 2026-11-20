@@ -22,6 +22,8 @@ mod table;
 mod textbox;
 mod vertical;
 pub mod wordart;
+#[cfg(feature = "wire-layout")]
+pub mod wire;
 mod work;
 
 use std::collections::{HashMap, HashSet};
@@ -267,6 +269,7 @@ impl HideDeleted {
 
 /// One laid-out page.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "wire-layout", derive(serde::Serialize, serde::Deserialize))]
 pub struct Page {
     pub w: f32,
     pub h: f32,

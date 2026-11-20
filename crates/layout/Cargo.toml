@@ -8,6 +8,9 @@ description = "WordCraft layout: shaping, line breaking, tabs, lists, tables, pa
 [lints]
 workspace = true
 
+[features]
+wire-layout = []
+
 [dependencies]
 wordcraft-geom = { workspace = true, features = ["image"] }
 wordcraft-doc = { workspace = true }

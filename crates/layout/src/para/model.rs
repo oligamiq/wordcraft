@@ -65,7 +65,9 @@ pub(super) fn undrawable_bullet(text: &str, lvl: &Level, rc: &ResolvedChar) -> b
 
 /// A face at a size with the formatting needed to draw it.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "wire-layout", derive(serde::Serialize, serde::Deserialize))]
 pub struct StyleRun {
+    #[cfg_attr(feature = "wire-layout", serde(with = "crate::wire::face"))]
     pub face: FaceRef,
     pub size: f32,
     pub synth_bold: bool,
@@ -93,6 +95,7 @@ impl StyleRun {
 
 /// A positioned glyph inside its cluster.
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "wire-layout", derive(serde::Serialize, serde::Deserialize))]
 pub struct Glyph {
     pub gid: u32,
     /// Offset from the cluster's x, points.
@@ -101,6 +104,7 @@ pub struct Glyph {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "wire-layout", derive(serde::Serialize, serde::Deserialize))]
 pub enum ClKind {
     Text,
     Space,
@@ -117,6 +121,7 @@ pub enum ClKind {
 /// One drawing segment of a grapheme cluster (or object, tab, break).
 /// Font/style changes may split its drawing; paragraph edit/wrap boundaries keep it atomic.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "wire-layout", derive(serde::Serialize, serde::Deserialize))]
 pub struct Cluster {
     pub start: usize,
     pub end: usize,
@@ -138,6 +143,7 @@ pub struct Cluster {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "wire-layout", derive(serde::Serialize, serde::Deserialize))]
 pub enum LineEnd {
     /// Wrapped (or last line).
     Wrap,
@@ -151,6 +157,7 @@ pub enum LineEnd {
 /// A laid-out line. Coordinates are relative to the paragraph's content box: x from the
 /// column's left edge, y from the top of the first line.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "wire-layout", derive(serde::Serialize, serde::Deserialize))]
 pub struct Line {
     pub top: f32,
     pub height: f32,
@@ -188,6 +195,7 @@ pub struct Line {
 
 /// Where a cluster of a bidirectional line is drawn.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "wire-layout", derive(serde::Serialize, serde::Deserialize))]
 pub struct VisCl {
     /// Left edge and width, points (paragraph coordinates, like `Line::xs`).
     pub x: f32,
@@ -290,6 +298,7 @@ impl Line {
 
 /// The list label drawn on the first text line (after an opening page break, if any).
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "wire-layout", derive(serde::Serialize, serde::Deserialize))]
 pub struct Label {
     pub text: String,
     /// Maximum line ascent of every shaped font in the label, including its leading.
@@ -307,6 +316,7 @@ pub struct Label {
 
 /// Ruby text laid out over its base text's cluster.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "wire-layout", derive(serde::Serialize, serde::Deserialize))]
 pub struct RubyLayout {
     /// The base text's cluster (the one cluster standing for an [`InlineObject::Ruby`]).
     pub cluster: usize,
@@ -322,6 +332,7 @@ pub struct RubyLayout {
 
 /// One font run of a list label.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "wire-layout", derive(serde::Serialize, serde::Deserialize))]
 pub struct LabelRun {
     /// Index into `ParaLayout::styles`.
     pub style: u32,
@@ -334,6 +345,7 @@ pub struct LabelRun {
 /// A shape drawn over a cluster (an enclosed character's circle, square, triangle or diamond),
 /// relative to the cluster's left edge and baseline, in the cluster's text colour.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "wire-layout", derive(serde::Serialize, serde::Deserialize))]
 pub struct Enclosed {
     pub kind: wordcraft_doc::para::ShapeKind,
     /// Left edge from the cluster's x; top above the baseline (up is positive), points.
