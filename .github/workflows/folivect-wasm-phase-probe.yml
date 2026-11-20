@@ -24,10 +24,12 @@ jobs:
           tmp=$(mktemp -d)
           asset=wasm-bindgen-0.2.129-x86_64-unknown-linux-musl.tar.gz
           cd "$tmp"
-          curl --fail --location --silent --show-error "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.129/$asset" -o "$asset"
+          # Upstream checksum manifest lists gh-release/<asset>, so retain that path.
+          mkdir gh-release
+          curl --fail --location --silent --show-error "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.129/$asset" -o "gh-release/$asset"
           curl --fail --location --silent --show-error "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.129/$asset.sha256sum" -o "$asset.sha256sum"
-          sha256sum -c "$asset.sha256sum"
-          tar xzf "$asset"
+          sha256sum --strict -c "$asset.sha256sum"
+          tar xzf "gh-release/$asset"
           ./wasm-bindgen-0.2.129-x86_64-unknown-linux-musl/wasm-bindgen --target web --out-dir "$GITHUB_WORKSPACE/probe-output" "$GITHUB_WORKSPACE/target/wasm32-unknown-unknown/release/folivect_phase_probe.wasm"
       - name: Compare fresh-instance phase CPU (not production Worker CPU)
         run: |
