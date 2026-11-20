@@ -17,7 +17,7 @@ jobs:
           set -euo pipefail
           rustup toolchain install 1.98.1 --profile minimal
           export RUSTUP_TOOLCHAIN=1.98.1 CARGO_BUILD_JOBS=2
-          cargo test --locked -p wordcraft-layout --features wire-layout-interned --lib wire::tests
+          cargo test --locked -p wordcraft-layout --features wire-layout-interned --lib wire::
           cargo test --locked -p wordcraft-layout --features wire-layout-interned --test wire_layout
       - name: Check browser target
         run: |
@@ -30,3 +30,8 @@ jobs:
           set -euo pipefail
           export RUSTUP_TOOLCHAIN=1.98.1 CARGO_BUILD_JOBS=2
           cargo test --release --locked -p wordcraft-layout --features wire-layout-interned --test wire_layout compare_wire_codec_costs -- --ignored --nocapture
+      - name: Measure actual layout and PDF export phases (native diagnostic)
+        run: |
+          set -euo pipefail
+          export RUSTUP_TOOLCHAIN=1.98.1 CARGO_BUILD_JOBS=2
+          cargo test --release --locked -p wordcraft-pdf --lib tests::profile_pdf_export_phases -- --ignored --nocapture

@@ -61,6 +61,8 @@ enum Attempt {
 }
 
 fn write_attempt(doc: &Document, lay: &DocLayout, opts: &PdfOptions, pages: &[usize], outlined: &HashSet<u32>) -> Result<Attempt, PdfError> {
+    #[cfg(all(test, target_os = "linux"))]
+    let setup_stamp = profile::stamp();
     let settings = krilla::SerializeSettings { compress_content_streams: opts.compress, enable_tagging: opts.tagged, ..Default::default() };
     let language = doc.styles.default_chr.lang.clone().filter(|l| !l.is_empty() && l.is_ascii());
     let mut writer = Writer::new_with_language(settings, metadata(doc, opts), language);
@@ -85,6 +87,10 @@ fn write_attempt(doc: &Document, lay: &DocLayout, opts: &PdfOptions, pages: &[us
     if let Some(o) = ex.outline(pages) {
         pdf.set_outline(o);
     }
+    #[cfg(all(test, target_os = "linux"))]
+    profile::record("setup", setup_stamp);
+    #[cfg(all(test, target_os = "linux"))]
+    let pages_stamp = profile::stamp();
     for &pi in pages {
         let Some(page) = lay.pages.get(pi) else { return Err(PdfError::BadPage(pi.saturating_add(1))) };
         let fit = Fit::of(page, opts.paper);
@@ -111,13 +117,24 @@ fn write_attempt(doc: &Document, lay: &DocLayout, opts: &PdfOptions, pages: &[us
         }
         kp.finish();
     }
+    #[cfg(all(test, target_os = "linux"))]
+    profile::record("pages", pages_stamp);
+    #[cfg(all(test, target_os = "linux"))]
+    let tags_stamp = profile::stamp();
     if opts.tagged {
         pdf.set_tag_tree(ex.tag_tree());
     }
     if let Some(error) = ex.font_error {
         return Err(error);
     }
-    match writer.finish() {
+    #[cfg(all(test, target_os = "linux"))]
+    profile::record("tags", tags_stamp);
+    #[cfg(all(test, target_os = "linux"))]
+    let finish_stamp = profile::stamp();
+    let result = writer.finish();
+    #[cfg(all(test, target_os = "linux"))]
+    profile::record("finish", finish_stamp);
+    match result {
         Ok(bytes) => Ok(Attempt::Done(bytes)),
         Err(WriteError::Serialization(error)) => match *error {
             KrillaError::Font(font, msg) => {
@@ -166,5 +183,53 @@ impl Fit {
     /// A layout point on the PDF page.
     pub(crate) fn point(self, x: f32, y: f32) -> (f32, f32) {
         (x * self.k + self.dx, y * self.k + self.dy)
+    }
+}
+
+/// Test-only instrumentation. No profiling state or timing calls in production
+/// or browser builds. Linux schedstat measures actual scheduled thread time.
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) mod profile {
+    use std::{cell::RefCell, collections::BTreeMap, time::Instant};
+    type Records = BTreeMap<&'static str, (f64, f64)>;
+    thread_local! {
+        static ACTIVE: RefCell<Option<Records>> = const { RefCell::new(None) };
+    }
+    pub(crate) struct Stamp {
+        cpu_ns: u64,
+        wall: Instant,
+    }
+
+    fn cpu_ns() -> Option<u64> {
+        std::fs::read_to_string("/proc/thread-self/schedstat").ok()?.split_whitespace().next()?.parse().ok()
+    }
+
+    pub(crate) fn begin() {
+        ACTIVE.with(|active| *active.borrow_mut() = Some(Records::new()));
+    }
+
+    pub(crate) fn stamp() -> Option<Stamp> {
+        if !ACTIVE.with(|active| active.borrow().is_some()) {
+            return None;
+        }
+        Some(Stamp { cpu_ns: cpu_ns()?, wall: Instant::now() })
+    }
+
+    pub(crate) fn record(phase: &'static str, start: Option<Stamp>) {
+        let Some(start) = start else { return };
+        let wall = start.wall.elapsed().as_secs_f64() * 1000.0;
+        let cpu = cpu_ns().map(|end| end.saturating_sub(start.cpu_ns) as f64 * 1e-6);
+        let Some(cpu) = cpu else { return };
+        ACTIVE.with(|active| {
+            if let Some(records) = active.borrow_mut().as_mut() {
+                let entry = records.entry(phase).or_default();
+                entry.0 += cpu;
+                entry.1 += wall;
+            }
+        });
+    }
+
+    pub(crate) fn end() -> Records {
+        ACTIVE.with(|active| active.borrow_mut().take().unwrap_or_default())
     }
 }

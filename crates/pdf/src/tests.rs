@@ -2488,3 +2488,55 @@ fn baseline_is_the_most_shared_y() {
     assert_eq!(baseline(&[(1, 0.0, 9.0), (2, 3.0, 4.0)]), Some(4.0));
     assert_eq!(baseline(&[(1, 0.0, -0.0), (2, 3.0, 0.0)]), Some(0.0));
 }
+
+/// Native Linux diagnostic. The measurements distinguish scheduled thread CPU and
+/// wall time, and exclude document construction/extraction and output checking.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore]
+fn profile_pdf_export_phases() {
+    use crate::export::profile;
+    use std::collections::BTreeMap;
+    let opts = PdfOptions::default();
+    let mut repeated = Document::from_text(&"A paragraph with office ffi and 123, and a second sentence.\n".repeat(120));
+    repeated.styles.default_chr.font = Some("Source Sans 3".into());
+    let mut varied =
+        Document::from_text(&(0..120).map(|i| format!("Paragraph {i}: {} {}", "office ".repeat(i % 7 + 1), i * 19)).collect::<Vec<_>>().join("\n"));
+    varied.styles.default_chr.font = Some("Source Sans 3".into());
+    for (name, mut doc) in [("repeated", repeated), ("varied", varied), ("mixed", sample())] {
+        doc.core.created = "2024-05-06T07:08:09Z".into();
+        let expected = extract_text(&export(&doc, &opts).unwrap());
+        let lo = LayoutOptions { hide_deleted: !opts.include_markup, comment_balloons: opts.comments, numeral: opts.numeral, ..Default::default() };
+        let mut samples: BTreeMap<&str, Vec<(f64, f64)>> = BTreeMap::new();
+        for i in 0..44 {
+            profile::begin();
+            let t = profile::stamp().unwrap();
+            let lay = layout(&doc, &mut LayoutCache::new(), &lo);
+            profile::record("layout", Some(t));
+            let t = profile::stamp().unwrap();
+            let pdf = export_layout(&doc, &lay, &opts).unwrap();
+            profile::record("export_total", Some(t));
+            let records = profile::end();
+            assert_eq!(extract_text(&pdf), expected);
+            assert_eq!(lay.pages.len(), expected.len());
+            assert!(records.contains_key("finish") && records.contains_key("pages") && records.contains_key("setup") && records.contains_key("tags"));
+            if i >= 12 {
+                for (phase, cost) in records {
+                    samples.entry(phase).or_default().push(cost);
+                }
+            }
+        }
+        for (phase, values) in samples {
+            assert_eq!(values.len(), 32);
+            let cpu = values.iter().map(|v| v.0).sum::<f64>() / values.len() as f64;
+            let wall = values.iter().map(|v| v.1).sum::<f64>() / values.len() as f64;
+            let mut sorted: Vec<f64> = values.iter().map(|v| v.0).collect();
+            sorted.sort_by(f64::total_cmp);
+            println!(
+                "PDF_PHASE_NATIVE fixture={name} pages={} phase={phase} n=32 mean_thread_ms={cpu:.4} p95_thread_ms={:.4} mean_wall_ms={wall:.4}",
+                expected.len(),
+                sorted[30]
+            );
+        }
+    }
+}
