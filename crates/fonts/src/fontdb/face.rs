@@ -1,10 +1,10 @@
-use super::names::{LocalName, east_asian_font};
 use super::StaticFaceKey;
-use sha2::{Digest, Sha256};
+use super::names::{LocalName, east_asian_font};
 use super::{
     Arc, AtomicU32, BezPath, DrawSettings, Engine, GlyphId, Hinting, HintingInstance, HintingOptions, Location, LocationRef, MetadataProvider,
     Ordering, OutlinePen, RwLock, Size, Target,
 };
+use sha2::{Digest, Sha256};
 
 /// The family used when a requested family is unknown (the UI sans).
 pub const FALLBACK_FAMILY: &str = "Source Sans 3";
@@ -15,21 +15,13 @@ pub fn bundled() -> &'static [&'static [u8]] {
     BUNDLED
 }
 
-pub(super) static BUNDLED: &[&[u8]] = &[
-    include_bytes!("../../../../assets/fonts/SourceSans3-Regular.ttf"),
-    include_bytes!("../../../../assets/fonts/SourceSans3-Semibold.ttf"),
-    include_bytes!("../../../../assets/fonts/SourceSans3-Bold.ttf"),
-    include_bytes!("../../../../assets/fonts/SourceSans3-It.ttf"),
-    include_bytes!("../../../../assets/fonts/SourceSerif4-Regular.ttf"),
-    include_bytes!("../../../../assets/fonts/SourceSerif4-It.ttf"),
-    include_bytes!("../../../../assets/fonts/SourceSerif4-Semibold.ttf"),
-    include_bytes!("../../../../assets/fonts/SourceSerif4-Bold.ttf"),
-    include_bytes!("../../../../assets/fonts/SourceSerif4-BoldIt.ttf"),
-    include_bytes!("../../../../assets/fonts/Inter-Regular.ttf"),
-    include_bytes!("../../../../assets/fonts/Inter-Medium.ttf"),
-    include_bytes!("../../../../assets/fonts/Inter-SemiBold.ttf"),
-    include_bytes!("../../../../assets/fonts/JetBrainsMono-Regular.ttf"),
-];
+include!(concat!(env!("OUT_DIR"), "/bundled_fonts.rs"));
+
+/// The digest is valid only for the exact embedded static byte slice.
+/// Unrecognized static resources retain the ordinary content-hash path.
+pub(super) fn bundled_digest(bytes: &[u8]) -> Option<[u8; 32]> {
+    BUNDLED.iter().zip(BUNDLED_SHA256).find_map(|(data, digest)| std::ptr::eq(bytes, *data).then_some(*digest))
+}
 
 #[derive(Clone)]
 pub(super) enum FontBytes {
@@ -190,7 +182,10 @@ impl FontFace {
             return None;
         };
         self.static_key
-            .get_or_init(|| StaticFaceKey::new(Sha256::digest(bytes).into(), self.index, &self.coords))
+            .get_or_init(|| {
+                let digest = bundled_digest(bytes).unwrap_or_else(|| Sha256::digest(bytes).into());
+                StaticFaceKey::new(digest, self.index, &self.coords)
+            })
             .as_ref()
     }
 

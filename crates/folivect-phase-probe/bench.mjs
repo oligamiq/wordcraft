@@ -68,6 +68,11 @@ if (!isMainThread) {
     assert.ok(reference.count>1);
     assert.equal(Buffer.from(reference.bytes.subarray(0,5)).toString(),'%PDF-');
     const expected=digest(reference.bytes);
+    const golden=[
+      'cc5b14c69d663932ed4a74d75357d66d3222d4156f7b05300b06cc96e8b80f49',
+      'dbb7f2dcf262688e485a95bd1db55c247131eec244b5713b6d3962b7afbfa918',
+    ][fixture];
+    assert.equal(expected,golden,'previous verified PDF output changed');
     const rows=[];
     for(let i=-12;i<32;i++){
       const order=i%2===0?[0,1,2,3]:[3,2,1,0];

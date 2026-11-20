@@ -433,7 +433,13 @@ fn static_keys_resolve_across_catalogs_without_using_process_ids() {
     let right = b.face(FALLBACK_FAMILY, "Regular");
     assert_ne!(left.id(), right.id());
     let key = left.static_face_key().unwrap();
-    assert_eq!(key.sha256(), &[0x46, 0x44, 0xc8, 0x1b, 0x86, 0xec, 0x9c, 0xaa, 0xa7, 0x6b, 0x63, 0x48, 0x89, 0x96, 0x8e, 0xd3, 0xc4, 0xf4, 0xf5, 0x2f, 0x05, 0x48, 0x55, 0x93, 0x3a, 0xcc, 0x7c, 0x2b, 0x21, 0xe5, 0x3b, 0x0f]);
+    assert_eq!(
+        key.sha256(),
+        &[
+            0x46, 0x44, 0xc8, 0x1b, 0x86, 0xec, 0x9c, 0xaa, 0xa7, 0x6b, 0x63, 0x48, 0x89, 0x96, 0x8e, 0xd3, 0xc4, 0xf4, 0xf5, 0x2f, 0x05, 0x48, 0x55,
+            0x93, 0x3a, 0xcc, 0x7c, 0x2b, 0x21, 0xe5, 0x3b, 0x0f
+        ]
+    );
     assert_eq!(right.static_face_key(), Some(key));
     assert_eq!(b.static_face_by_key(key).unwrap().id(), right.id());
     assert_ne!(a.face(FALLBACK_FAMILY, "Bold").static_face_key(), Some(key));
@@ -454,4 +460,17 @@ fn static_keys_never_resolve_owned_font_bytes_even_if_identical() {
     assert!(b.static_face_key().is_none());
     assert!(owned.static_face_by_key(key).is_none());
     assert_eq!(public.static_face_by_key(key).unwrap().id(), a.id());
+}
+
+#[test]
+fn bundled_digest_matches_embedded_bytes_only() {
+    use super::face::bundled_digest;
+    use sha2::{Digest, Sha256};
+
+    for &bytes in super::BUNDLED {
+        let actual: [u8; 32] = Sha256::digest(bytes).into();
+        assert_eq!(bundled_digest(bytes), Some(actual));
+        let copy = bytes.to_vec();
+        assert_eq!(bundled_digest(&copy), None);
+    }
 }

@@ -15,6 +15,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22.22.1'
+      - name: Verify compile-time font digests
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.98.1 --profile minimal
+          export RUSTUP_TOOLCHAIN=1.98.1 CARGO_BUILD_JOBS=2
+          cargo test --locked -p wordcraft-fonts --lib bundled_digest_matches_embedded_bytes_only
       - name: Build independent WASM probe
         run: |
           set -euo pipefail

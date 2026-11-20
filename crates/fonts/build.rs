@@ -6,10 +6,14 @@
 //! build also fails when the checkout has no font for a CJK interface language (Japanese,
 //! Simplified Chinese), as an outdated pin once did (#241). It only reads the local checkout: no
 //! network.
+use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
 fn main() {
+    if let Err(e) = bundled_fonts() {
+        println!("cargo::error=generating bundled font digests: {e}");
+    }
     println!("cargo::rerun-if-env-changed=CRAFT_FONTS_DIR");
     println!("cargo::rerun-if-env-changed=CRAFT_FONTS_REQUIRED");
     let mut src = String::from("pub static CRAFT_FONTS: &[CraftFont] = &[\n");
@@ -73,4 +77,42 @@ fn craft_fonts(dir: &std::path::Path) -> Result<(String, Vec<String>), String> {
         );
     }
     Ok((out, covered))
+}
+
+// Single source of truth for the bundled bytes and their precomputed digests.
+// Both are generated from the same checked-in resource at build time, in order.
+const BUNDLED_FILES: &[&str] = &[
+    "SourceSans3-Regular.ttf",
+    "SourceSans3-Semibold.ttf",
+    "SourceSans3-Bold.ttf",
+    "SourceSans3-It.ttf",
+    "SourceSerif4-Regular.ttf",
+    "SourceSerif4-It.ttf",
+    "SourceSerif4-Semibold.ttf",
+    "SourceSerif4-Bold.ttf",
+    "SourceSerif4-BoldIt.ttf",
+    "Inter-Regular.ttf",
+    "Inter-Medium.ttf",
+    "Inter-SemiBold.ttf",
+    "JetBrainsMono-Regular.ttf",
+];
+
+fn bundled_fonts() -> Result<(), Box<dyn std::error::Error>> {
+    let root = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?).join("../../assets/fonts");
+    let out = PathBuf::from(std::env::var("OUT_DIR")?).join("bundled_fonts.rs");
+    let mut src = String::from("pub(super) static BUNDLED: &[&[u8]] = &[\n");
+    let mut digests = String::from("static BUNDLED_SHA256: &[[u8; 32]] = &[\n");
+    for file in BUNDLED_FILES {
+        let path = root.join(file).canonicalize()?;
+        println!("cargo::rerun-if-changed={}", path.display());
+        let bytes = std::fs::read(&path)?;
+        let digest: [u8; 32] = Sha256::digest(&bytes).into();
+        writeln!(src, "    include_bytes!({:?}),", path.to_string_lossy())?;
+        writeln!(digests, "    {digest:?},")?;
+    }
+    src.push_str("];\n");
+    digests.push_str("];\n");
+    src.push_str(&digests);
+    std::fs::write(out, src)?;
+    Ok(())
 }
