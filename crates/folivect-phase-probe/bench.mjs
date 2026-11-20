@@ -19,7 +19,7 @@ if (!isMainThread) {
   const {module, glue, fixture, codec, mode, packet} = workerData;
   const api = await import(glue);
   const phases = {};
-  let probe, output, count, instance;
+  let probe, doc, output, count, instance;
   const total = stamp();
   let t = stamp();
   instance = api.initSync({module});
@@ -29,9 +29,12 @@ if (!isMainThread) {
   phases.fonts = elapsed(t);
   try {
     t = stamp();
-    if (mode === 'consumer') probe = api.Probe.from_packet(fixture, codec, packet);
-    else probe = api.Probe.from_fixture(fixture);
-    phases[mode === 'consumer' ? 'decode_doc' : 'layout_doc'] = elapsed(t);
+    doc = api.DocumentProbe.from_fixture(fixture);
+    phases.document = elapsed(t);
+    t = stamp();
+    if (mode === 'consumer') probe = doc.decode(codec, packet);
+    else probe = doc.layout();
+    phases[mode === 'consumer' ? 'decode' : 'layout'] = elapsed(t);
     count = probe.pages();
     t = stamp();
     output = mode === 'producer' ? probe.packet(codec) : probe.pdf();
@@ -39,6 +42,7 @@ if (!isMainThread) {
   } finally {
     t = stamp();
     probe?.free();
+    doc?.free();
     phases.dispose = elapsed(t);
   }
   phases.total = elapsed(total);

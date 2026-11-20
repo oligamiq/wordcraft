@@ -26,6 +26,39 @@ pub fn prewarm_public_fonts() {
     wordcraft_fonts::FontDb::global().prewarm_static_face_keys();
 }
 
+// Split synthetic document construction from the actual layout/decode
+// operation, so a parsed-document cost is not mistaken for layout CPU.
+#[wasm_bindgen]
+pub struct DocumentProbe {
+    doc: Option<Document>,
+}
+
+#[wasm_bindgen]
+impl DocumentProbe {
+    pub fn from_fixture(kind: u32) -> Result<DocumentProbe, JsValue> {
+        Ok(DocumentProbe { doc: Some(fixture(kind)?) })
+    }
+
+    pub fn layout(&mut self) -> Result<Probe, JsValue> {
+        let doc = self.doc.take().ok_or_else(|| failure("Document already used"))?;
+        let opts = PdfOptions::default();
+        let lo = LayoutOptions { hide_deleted: !opts.include_markup, comment_balloons: opts.comments, numeral: opts.numeral, ..Default::default() };
+        let lay = layout(&doc, &mut LayoutCache::new(), &lo);
+        Ok(Probe { doc, lay })
+    }
+
+    pub fn decode(&mut self, codec: u32, packet: &[u8]) -> Result<Probe, JsValue> {
+        let lay = match codec {
+            1 => wire::decode(packet).map_err(failure)?,
+            2 => wire::decode_compact(packet).map_err(failure)?,
+            3 => wire::decode_interned(packet).map_err(failure)?,
+            _ => return Err(failure("Unknown codec")),
+        };
+        let doc = self.doc.take().ok_or_else(|| failure("Document already used"))?;
+        Ok(Probe { doc, lay })
+    }
+}
+
 #[wasm_bindgen]
 pub struct Probe {
     doc: Document,
