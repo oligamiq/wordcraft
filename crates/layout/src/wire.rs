@@ -4,6 +4,11 @@
 use crate::{DocLayout, Page};
 use std::io::{self, Write};
 
+#[cfg(feature = "wire-layout-interned")]
+mod interned;
+#[cfg(feature = "wire-layout-interned")]
+pub use interned::{decode_interned, encode_interned};
+
 const MAGIC: &[u8] = b"FVLW\x01";
 pub const MAX_WIRE_BYTES: usize = 16 * 1024 * 1024;
 

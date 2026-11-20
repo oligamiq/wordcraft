@@ -77,7 +77,13 @@ fn compare_wire_codec_costs() {
         let reference = wire::encode(&source).unwrap();
         let compact = wire::encode_compact(&source).unwrap();
         assert!(compact.len() < reference.len());
+        #[cfg(feature = "wire-layout-interned")]
+        let interned = wire::encode_interned(&source).unwrap();
+        #[cfg(feature = "wire-layout-interned")]
+        assert!(interned.len() < compact.len());
         let mut samples: [Vec<f64>; 4] = Default::default();
+        #[cfg(feature = "wire-layout-interned")]
+        let mut interned_samples: [Vec<f64>; 2] = Default::default();
         for i in 0..44 {
             for compact_mode in if i % 2 == 0 { [false, true] } else { [true, false] } {
                 let t = Instant::now();
@@ -95,6 +101,32 @@ fn compare_wire_codec_costs() {
                     samples[j + 1].push(decode_ms);
                 }
             }
+            #[cfg(feature = "wire-layout-interned")]
+            {
+                let t = Instant::now();
+                let bytes = wire::encode_interned(black_box(&source)).unwrap();
+                let encode_ms = t.elapsed().as_secs_f64() * 1000.0;
+                let t = Instant::now();
+                let decoded = wire::decode_interned(black_box(&bytes)).unwrap();
+                let decode_ms = t.elapsed().as_secs_f64() * 1000.0;
+                assert_eq!(decoded.index, source.index);
+                assert_eq!(wire::encode(&decoded).unwrap(), reference);
+                assert_eq!(bytes, interned);
+                if i >= 12 {
+                    interned_samples[0].push(encode_ms);
+                    interned_samples[1].push(decode_ms);
+                }
+            }
+        }
+        #[cfg(feature = "wire-layout-interned")]
+        {
+            println!("WIRE_CODEC_NATIVE repeated={repeated} interned_bytes={}", interned.len());
+            for (name, mut s) in ["interned_encode", "interned_decode"].into_iter().zip(interned_samples) {
+                assert_eq!(s.len(), 32);
+                let mean = s.iter().sum::<f64>() / s.len() as f64;
+                s.sort_by(f64::total_cmp);
+                println!("WIRE_CODEC_NATIVE {name} n=32 mean_ms={mean:.4} p95_ms={:.4}", s[30]);
+            }
         }
         println!("WIRE_CODEC_NATIVE repeated={repeated} pages={} json_bytes={} compact_bytes={}", source.pages.len(), reference.len(), compact.len());
         for (name, mut s) in ["json_encode", "json_decode", "compact_encode", "compact_decode"].into_iter().zip(samples) {
@@ -104,4 +136,25 @@ fn compare_wire_codec_costs() {
             println!("WIRE_CODEC_NATIVE {name} n=32 mean_ms={mean:.4} p95_ms={:.4}", s[30]);
         }
     }
+}
+
+#[cfg(feature = "wire-layout-interned")]
+#[test]
+fn interned_layout_reuses_repeated_data_without_changing_layout() {
+    let mut doc = Document::from_text(&"A repeated paragraph with ffi and 123.\n".repeat(96));
+    doc.styles.default_chr.font = Some("Source Sans 3".to_string());
+    let source = layout(&doc, &mut LayoutCache::new(), &LayoutOptions::default());
+    let json = wire::encode(&source).unwrap();
+    let compact = wire::encode_compact(&source).unwrap();
+    let interned = wire::encode_interned(&source).unwrap();
+    assert!(interned.len() * 2 < compact.len(), "{} >= half of {}", interned.len(), compact.len());
+    let decoded = wire::decode_interned(&interned).unwrap();
+    assert_eq!(decoded.index, source.index);
+    assert_eq!(wire::encode(&decoded).unwrap(), json);
+    assert_eq!(wire::encode_interned(&decoded).unwrap(), interned);
+    assert!(wire::decode_interned(&compact).is_err());
+    assert!(wire::decode_interned(&interned[..interned.len() - 1]).is_err());
+    let mut trailing = interned.clone();
+    trailing.push(0);
+    assert!(wire::decode_interned(&trailing).is_err());
 }

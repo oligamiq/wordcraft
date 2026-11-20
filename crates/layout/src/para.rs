@@ -26,6 +26,8 @@ mod model;
 mod paragraph;
 mod proof;
 mod tabs;
+#[cfg(feature = "wire-layout-interned")]
+pub(crate) mod wire;
 
 pub use bidi::{bidi_levels, visual_order};
 pub(crate) use builder::left_out;

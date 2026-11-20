@@ -11,6 +11,7 @@ workspace = true
 [features]
 wire-layout = []
 wire-layout-msgpack = ["wire-layout", "dep:rmp-serde"]
+wire-layout-interned = ["wire-layout-msgpack"]
 
 [dependencies]
 wordcraft-geom = { workspace = true, features = ["image"] }

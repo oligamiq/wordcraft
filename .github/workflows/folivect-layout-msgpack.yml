@@ -1,7 +1,7 @@
 name: Folivect compact layout experiment
 on:
   push:
-    branches: [folivect/layout-wire-msgpack]
+    branches: [folivect/layout-wire-msgpack, folivect/layout-wire-interned]
 permissions:
   contents: read
 jobs:
@@ -17,16 +17,16 @@ jobs:
           set -euo pipefail
           rustup toolchain install 1.98.1 --profile minimal
           export RUSTUP_TOOLCHAIN=1.98.1 CARGO_BUILD_JOBS=2
-          cargo test --locked -p wordcraft-layout --features wire-layout-msgpack --lib wire::tests
-          cargo test --locked -p wordcraft-layout --features wire-layout-msgpack --test wire_layout
+          cargo test --locked -p wordcraft-layout --features wire-layout-interned --lib wire::tests
+          cargo test --locked -p wordcraft-layout --features wire-layout-interned --test wire_layout
       - name: Check browser target
         run: |
           set -euo pipefail
           rustup target add --toolchain 1.98.1 wasm32-unknown-unknown
           export RUSTUP_TOOLCHAIN=1.98.1 CARGO_BUILD_JOBS=2
-          cargo check --locked -p wordcraft-layout --target wasm32-unknown-unknown --features wire-layout-msgpack
+          cargo check --locked -p wordcraft-layout --target wasm32-unknown-unknown --features wire-layout-interned
       - name: Measure native release codec costs (diagnostic)
         run: |
           set -euo pipefail
           export RUSTUP_TOOLCHAIN=1.98.1 CARGO_BUILD_JOBS=2
-          cargo test --release --locked -p wordcraft-layout --features wire-layout-msgpack --test wire_layout compare_wire_codec_costs -- --ignored --nocapture
+          cargo test --release --locked -p wordcraft-layout --features wire-layout-interned --test wire_layout compare_wire_codec_costs -- --ignored --nocapture
