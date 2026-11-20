@@ -1,0 +1,16 @@
+[package]
+name = "folivect-phase-probe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wordcraft-doc = { workspace = true }
+wordcraft-fonts = { workspace = true }
+wordcraft-layout = { workspace = true, features = ["wire-layout-interned"] }
+wordcraft-pdf = { workspace = true }
+wasm-bindgen = "=0.2.129"

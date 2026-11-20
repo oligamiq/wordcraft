@@ -1,0 +1,36 @@
+name: Folivect standalone WASM phase diagnostic
+on:
+  push:
+    branches: [folivect/wasm-phase-probe]
+permissions:
+  contents: read
+jobs:
+  phase-probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.1'
+      - name: Build independent WASM probe
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.98.1 --profile minimal --target wasm32-unknown-unknown
+          export RUSTUP_TOOLCHAIN=1.98.1 CARGO_BUILD_JOBS=2
+          cargo build --locked --release -p folivect-phase-probe --target wasm32-unknown-unknown
+          tmp=$(mktemp -d)
+          asset=wasm-bindgen-0.2.129-x86_64-unknown-linux-musl.tar.gz
+          cd "$tmp"
+          curl --fail --location --silent --show-error "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.129/$asset" -o "$asset"
+          curl --fail --location --silent --show-error "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.129/$asset.sha256sum" -o "$asset.sha256sum"
+          sha256sum -c "$asset.sha256sum"
+          tar xzf "$asset"
+          ./wasm-bindgen-0.2.129-x86_64-unknown-linux-musl/wasm-bindgen --target web --out-dir "$GITHUB_WORKSPACE/probe-output" "$GITHUB_WORKSPACE/target/wasm32-unknown-unknown/release/folivect_phase_probe.wasm"
+      - name: Compare fresh-instance phase CPU (not production Worker CPU)
+        run: |
+          set -euo pipefail
+          node --version
+          node crates/folivect-phase-probe/bench.mjs probe-output
