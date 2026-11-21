@@ -23,6 +23,8 @@ mod textbox;
 mod vertical;
 #[cfg(feature = "wire-layout")]
 pub mod wire;
+#[cfg(feature = "wire-layout-interned")]
+pub mod continuation;
 pub mod wordart;
 mod work;
 
