@@ -1,0 +1,79 @@
+name: Folivect standalone cold/Wizer WASM comparison
+on:
+  push:
+    branches: [folivect/wasm-phase-probe]
+    paths: [.github/workflows/folivect-wasm-wizer-ab.yml]
+permissions:
+  contents: read
+jobs:
+  wizer-ab:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.1'
+      - name: Build identical raw WASM with and without public-font Wizer snapshot
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.98.1 --profile minimal --target wasm32-unknown-unknown
+          export RUSTUP_TOOLCHAIN=1.98.1 CARGO_BUILD_JOBS=2
+          cargo build --locked --release -p folivect-phase-probe --target wasm32-unknown-unknown
+          mkdir -p "$RUNNER_TEMP/tools/gh-release" "$RUNNER_TEMP/base" "$RUNNER_TEMP/snapshot"
+          curl --fail --location --silent --show-error "https://github.com/bytecodealliance/wasmtime/releases/download/v49.0.0/wasmtime-v49.0.0-x86_64-linux.tar.xz" -o "$RUNNER_TEMP/tools/wasmtime.tar.xz"
+          echo "a956c279ac6e80109369a285db30fc46f68239fa1bbeb03ccfa8e913bbca85fc  $RUNNER_TEMP/tools/wasmtime.tar.xz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/tools/wasmtime"
+          tar -xJf "$RUNNER_TEMP/tools/wasmtime.tar.xz" -C "$RUNNER_TEMP/tools/wasmtime" --strip-components=1
+          "$RUNNER_TEMP/tools/wasmtime/wasmtime" --version
+          asset=wasm-bindgen-0.2.129-x86_64-unknown-linux-musl.tar.gz
+          curl --fail --location --silent --show-error "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.129/$asset" -o "$RUNNER_TEMP/tools/gh-release/$asset"
+          curl --fail --location --silent --show-error "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.129/$asset.sha256sum" -o "$RUNNER_TEMP/tools/$asset.sha256sum"
+          (cd "$RUNNER_TEMP/tools" && sha256sum --strict -c "$asset.sha256sum" && tar xzf "gh-release/$asset")
+          bindgen="$RUNNER_TEMP/tools/wasm-bindgen-0.2.129-x86_64-unknown-linux-musl/wasm-bindgen"
+          raw="$PWD/target/wasm32-unknown-unknown/release/folivect_phase_probe.wasm"
+          init=$(node --input-type=module -e '
+            import fs from "node:fs";
+            const wasm=new WebAssembly.Module(fs.readFileSync(process.argv[1]));
+            const f=WebAssembly.Module.exports(wasm).filter(e=>e.kind==="function"&&/^prewarm_public_fonts(_[0-9a-f]+)?$/.test(e.name));
+            if(f.length!==1) throw Error("Wizer prewarm export missing/ambiguous: "+JSON.stringify(WebAssembly.Module.exports(wasm).filter(e=>e.name.includes("prewarm"))));
+            console.log(f[0].name);
+          ' "$raw")
+          echo "WIZER_INIT_EXPORT=$init"
+          "$RUNNER_TEMP/tools/wasmtime/wasmtime" wizer -W unknown-imports-trap=y --init-func "$init" --keep-init-func=true "$raw" -o "$RUNNER_TEMP/snapshot.wasm"
+          "$bindgen" --target web --out-name folivect_phase_probe --out-dir "$RUNNER_TEMP/base" "$raw"
+          "$bindgen" --target web --out-name folivect_phase_probe --out-dir "$RUNNER_TEMP/snapshot" "$RUNNER_TEMP/snapshot.wasm"
+          sha256sum "$RUNNER_TEMP/base/folivect_phase_probe_bg.wasm" "$RUNNER_TEMP/snapshot/folivect_phase_probe_bg.wasm"
+      - name: Compare fresh and reused-instance thread CPU, validate identical PDF hashes
+        run: |
+          set -euo pipefail
+          node --version
+          for tag in base snapshot snapshot base; do
+            idx=$(find "$RUNNER_TEMP" -maxdepth 1 -name "$tag-cold-*.log" | wc -l)
+            node crates/folivect-phase-probe/bench.mjs "$RUNNER_TEMP/$tag" > "$RUNNER_TEMP/$tag-cold-$idx.log"
+            node crates/folivect-phase-probe/bench-warm.mjs "$RUNNER_TEMP/$tag" > "$RUNNER_TEMP/$tag-warm-$idx.log"
+          done
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          import assert from 'node:assert/strict';
+          const root=process.env.RUNNER_TEMP;
+          for (const probe of [{type:'cold',prefix:'WASM_PHASE_PROBE',name:'interned_producer',phase:'total'}, {type:'cold',prefix:'WASM_PHASE_PROBE',name:'interned_consumer',phase:'total'}, {type:'warm',prefix:'WASM_REUSED_ISOLATE_CPU',name:'producer',phase:'request'}, {type:'warm',prefix:'WASM_REUSED_ISOLATE_CPU',name:'consumer',phase:'request'}]){
+            const series={};
+            for (const tag of ['base','snapshot']) {
+              series[tag]=[0,1].map(i=>{
+                const rows=fs.readFileSync(`${root}/${tag}-${probe.type}-${i}.log`,'utf8').split('\n').filter(s=>s.startsWith(probe.prefix+' ')).map(s=>JSON.parse(s.slice(probe.prefix.length+1)));
+                assert.equal(rows.length,probe.type==='cold'?14:6);
+                return rows.filter(x=>x.name===probe.name||x.role===probe.name).sort((a,b)=>a.fixture-b.fixture);
+              });
+            }
+            for(const fixture of [0,1]){
+              const rows=[...series.base,...series.snapshot].map(r=>r[fixture]);
+              assert.ok(rows.every(Boolean),`missing sample ${fixture}:${probe.type}:${probe.name}`);
+              assert.equal(new Set(rows.map(x=>x.sha256)).size,1,'PDF hash mismatch');
+              const measure=tag=>series[tag].map(row=>row[fixture].phases[probe.phase].thread_ms);
+              console.log('WIZER_SAME_RUNNER_AB',JSON.stringify({fixture,type:probe.type,role:probe.name,base:measure('base'),snapshot:measure('snapshot')}));
+            }
+          }
+          JS
