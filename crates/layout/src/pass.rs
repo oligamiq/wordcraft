@@ -323,29 +323,66 @@ fn place_block(ctx: &mut Ctx, pb: &mut PageBuilder, outline: &Option<OutlinePass
     }
 }
 
-/// Place the blocks from `block` to `last`, balancing the columns of the last page if asked.
-/// Returns the block after them and the text boxes laid out in the balancing attempts thrown away.
+/// The state of one section's top-level body-block walk. It deliberately
+/// borrows no Ctx or PageBuilder: callers keep those intact between steps.
+/// The balancing snapshot must survive a step boundary, because a later
+/// block can force an earlier page to be laid out again.
+struct SectionBlockWalk<'p> {
+    block: usize,
+    last: usize,
+    balance: bool,
+    body_top: f32,
+    from: Option<(usize, Snap<'p>)>,
+}
+
+impl<'p> SectionBlockWalk<'p> {
+    fn new(ctx: &Ctx, pb: &mut PageBuilder<'p>, (block, last): (usize, usize), (balance, body_top): (bool, f32)) -> Self {
+        let from = balance.then(|| (block, Snap::take(pb, ctx)));
+        Self { block, last, balance, body_top, from }
+    }
+
+    fn has_more(&self, doc: &Document) -> bool {
+        self.block <= self.last && doc.body.get(self.block).is_some()
+    }
+
+    fn advance(&mut self, ctx: &mut Ctx, pb: &mut PageBuilder<'p>, outline: &Option<OutlinePass>, max_blocks: usize) {
+        let mut handled = 0;
+        while handled < max_blocks && self.has_more(ctx.doc) {
+            let before = self.balance.then(|| (pb.pages.len(), Snap::take(pb, ctx)));
+            pb.mark_block();
+            place_block(ctx, pb, outline, self.block, self.body_top);
+            if let Some((pages, snap)) = before
+                && pb.pages.len() != pages
+            {
+                self.from = Some((self.block, snap));
+            }
+            self.block += 1;
+            handled += 1;
+        }
+    }
+
+    fn finish(self, ctx: &mut Ctx, pb: &mut PageBuilder<'p>) -> (usize, usize) {
+        let discarded = self.from.map_or(0, |(first, snap)| balance_columns(ctx, pb, (first, self.block), &snap, self.body_top));
+        (self.block, discarded)
+    }
+}
+
+/// Place all section blocks, advancing a bounded number in each cooperative
+/// step. The multi-pass pagination driver still runs to completion in the
+/// current invocation; this is not a durable Worker continuation.
 fn place_section_blocks<'p>(
     ctx: &mut Ctx,
     pb: &mut PageBuilder<'p>,
     outline: &Option<OutlinePass>,
-    (mut block, last): (usize, usize),
-    (balance, body_top): (bool, f32),
+    bounds: (usize, usize),
+    balancing: (bool, f32),
+    max_blocks: usize,
 ) -> (usize, usize) {
-    let mut from = balance.then(|| (block, Snap::take(pb, ctx)));
-    while block <= last && ctx.doc.body.get(block).is_some() {
-        let before = balance.then(|| (pb.pages.len(), Snap::take(pb, ctx)));
-        pb.mark_block();
-        place_block(ctx, pb, outline, block, body_top);
-        if let Some((pages, snap)) = before
-            && pb.pages.len() != pages
-        {
-            from = Some((block, snap));
-        }
-        block += 1;
+    let mut walk = SectionBlockWalk::new(ctx, pb, bounds, balancing);
+    while walk.has_more(ctx.doc) {
+        walk.advance(ctx, pb, outline, max_blocks);
     }
-    let discarded = from.map_or(0, |(first, snap)| balance_columns(ctx, pb, (first, block), &snap, body_top));
-    (block, discarded)
+    walk.finish(ctx, pb)
 }
 
 /// Endnotes at the end of the section: those referenced so far.
@@ -473,6 +510,7 @@ pub(crate) fn layout_pass(
     totals: &Totals,
     may_repeat: bool,
     (early, may_rewrap): (&EarlyFloats, bool),
+    max_blocks: usize,
 ) -> Pass {
     reset_cache(doc, cache, opts);
     let mut ctx = new_ctx(doc, cache, opts, (note_pages, totals));
@@ -515,7 +553,7 @@ pub(crate) fn layout_pass(
         pb.foot_top = sec.tops.foot;
         let last = (*end).min(doc.body.len().saturating_sub(1));
         let balance = prepare_section_end(&mut pb, sections, (si, mode.web));
-        let (next, discarded) = place_section_blocks(&mut ctx, &mut pb, &outline, (block, last), (balance, sec.tops.body));
+        let (next, discarded) = place_section_blocks(&mut ctx, &mut pb, &outline, (block, last), (balance, sec.tops.body), max_blocks);
         (block, boxes_discarded) = (next, boxes_discarded + discarded);
         section_endnotes(&mut ctx, &mut pb, &mut endnotes, (sect, si, block));
     }

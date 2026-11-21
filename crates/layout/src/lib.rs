@@ -21,9 +21,9 @@ pub mod styleref;
 mod table;
 mod textbox;
 mod vertical;
-pub mod wordart;
 #[cfg(feature = "wire-layout")]
 pub mod wire;
+pub mod wordart;
 mod work;
 
 use std::collections::{HashMap, HashSet};
@@ -313,6 +313,21 @@ pub struct DocLayout {
 
 /// Lay out the whole document.
 pub fn layout(doc: &Document, cache: &mut LayoutCache, opts: &LayoutOptions) -> DocLayout {
+    layout_with_block_batch_size(doc, cache, opts, usize::MAX)
+}
+
+/// Experimental cooperative placement of at most max_blocks *top-level body*
+/// blocks per in-process step. A single block can still be arbitrarily costly.
+/// This does not persist state across Worker isolates or bound whole-pass CPU.
+#[cfg(feature = "wire-layout-interned")]
+pub fn layout_in_block_batches(doc: &Document, cache: &mut LayoutCache, opts: &LayoutOptions, max_blocks: usize) -> Result<DocLayout, String> {
+    if max_blocks == 0 {
+        return Err("Block batch limit must be positive".into());
+    }
+    Ok(layout_with_block_batch_size(doc, cache, opts, max_blocks))
+}
+
+fn layout_with_block_batch_size(doc: &Document, cache: &mut LayoutCache, opts: &LayoutOptions, max_blocks: usize) -> DocLayout {
     let t0 = now_ms();
     // Page totals shown in the body (`NUMPAGES`, `SECTIONPAGES`) are known only after
     // paginating: lay out again with the totals found until they hold (bounded). Footnotes
@@ -325,7 +340,7 @@ pub fn layout(doc: &Document, cache: &mut LayoutCache, opts: &LayoutOptions) -> 
     let mut passes = 0;
     let (mut early, mut rewraps) = (EarlyFloats::new(), 0);
     let mut l = loop {
-        match layout_pass(doc, cache, opts, &note_pages, &totals, passes < MAX_TOTAL_PASSES, (&early, rewraps < MAX_REWRAP_PASSES)) {
+        match layout_pass(doc, cache, opts, &note_pages, &totals, passes < MAX_TOTAL_PASSES, (&early, rewraps < MAX_REWRAP_PASSES), max_blocks) {
             Pass::Again(t) => {
                 totals = t;
                 passes += 1;
