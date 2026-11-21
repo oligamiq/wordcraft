@@ -380,3 +380,100 @@ mod pass_boundary_tests {
         ));
     }
 }
+
+// Stage 2b: a true in-pass cursor, beginning with the strictly plain body subset.
+// Complex notes/tables/floats/columns remain unsupported until their state is owned.
+#[cfg(test)]
+mod block_boundary_tests {
+    use super::*;
+    use crate::{LayoutCache, LayoutOptions, layout, wire};
+    use wordcraft_doc::{Document, InlineObject, Path, StoryRef};
+
+    fn plain_doc() -> Document {
+        let mut doc = Document::from_text(&"A sentence with enough words to take some room.\n".repeat(140));
+        doc.styles.default_chr.font = Some("Source Sans 3".into());
+        doc
+    }
+
+    #[test]
+    fn resume_body_blocks_across_new_instances_without_prefix_relayout() {
+        let doc = plain_doc();
+        let opts = LayoutOptions::default();
+        let expected = wire::encode(&layout(&doc, &mut LayoutCache::new(), &opts)).unwrap();
+        assert!(doc.body.len() >= 100);
+        for batch_size in [1usize, 3, 13, 41] {
+            let mut continuation: Option<Vec<u8>> = None;
+            let mut progressed = 0usize;
+            let mut completed = None;
+            for _ in 0..=doc.body.len() {
+                let mut cache = LayoutCache::new();
+                let input = continuation.as_deref();
+                match layout_in_resumable_blocks(&doc, &mut cache, &opts, input, [0x31; 32], [0x42; 32], batch_size).unwrap() {
+                    LayoutPassStep::Continue(bytes) => {
+                        let envelope = decode(&bytes, [0x31; 32], [0x42; 32], 1, doc.body.len() as u32).unwrap();
+                        let next = envelope.cursor.block as usize;
+                        assert_eq!(next, (progressed + batch_size).min(doc.body.len()));
+                        assert!(next > progressed);
+                        progressed = next;
+                        continuation = Some(bytes);
+                    }
+                    LayoutPassStep::Complete(output) => {
+                        completed = Some(output);
+                        break;
+                    }
+                }
+            }
+            assert_eq!(progressed + batch_size >= doc.body.len(), true, "must reach final blocks");
+            assert_eq!(wire::encode(&completed.expect("completed")).unwrap(), expected, "batch_size={batch_size}");
+        }
+    }
+
+    #[test]
+    fn rejects_unsupported_structures_and_mismatched_checkpoints() {
+        let doc = plain_doc();
+        let opts = LayoutOptions::default();
+        assert!(matches!(
+            layout_in_resumable_blocks(&doc, &mut LayoutCache::new(), &opts, None, [3; 32], [4; 32], 0),
+            Err(ContinuationError::OutOfBounds)
+        ));
+
+        let first = layout_in_resumable_blocks(&doc, &mut LayoutCache::new(), &opts, None, [3; 32], [4; 32], 3).unwrap();
+        let LayoutPassStep::Continue(bytes) = first else { panic!("expected a checkpoint") };
+        assert!(matches!(
+            layout_in_resumable_blocks(&doc, &mut LayoutCache::new(), &opts, Some(&bytes), [5; 32], [4; 32], 3),
+            Err(ContinuationError::WrongSource)
+        ));
+        assert!(matches!(
+            layout_in_resumable_blocks(&doc, &mut LayoutCache::new(), &opts, Some(&bytes), [3; 32], [5; 32], 3),
+            Err(ContinuationError::WrongOptions)
+        ));
+
+        let mut wrong = decode(&bytes, [3; 32], [4; 32], 1, doc.body.len() as u32).unwrap();
+        wrong.cursor.block += 1;
+        let wrong = encode(&wrong).unwrap();
+        assert!(matches!(
+            layout_in_resumable_blocks(&doc, &mut LayoutCache::new(), &opts, Some(&wrong), [3; 32], [4; 32], 3),
+            Err(ContinuationError::InvalidState)
+        ));
+
+        let mut field_doc = plain_doc();
+        let p = field_doc.para_mut(StoryRef::Body, &Path::top(0)).unwrap();
+        p.insert_object(
+            p.len(),
+            InlineObject::Field { instr: "PAGE".into(), result: "1".into(), locked: false, dirty: false, code: false, form: String::new() },
+            &Default::default(),
+        )
+        .unwrap();
+        assert!(matches!(
+            layout_in_resumable_blocks(&field_doc, &mut LayoutCache::new(), &opts, None, [3; 32], [4; 32], 3),
+            Err(ContinuationError::Unsupported)
+        ));
+
+        let mut columns_doc = plain_doc();
+        columns_doc.last_section.columns.count = 2;
+        assert!(matches!(
+            layout_in_resumable_blocks(&columns_doc, &mut LayoutCache::new(), &opts, None, [3; 32], [4; 32], 3),
+            Err(ContinuationError::Unsupported)
+        ));
+    }
+}
