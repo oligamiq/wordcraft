@@ -1,7 +1,10 @@
 //! Private uncompressed dictionary packet. Tables are request-local and ordered
 //! by first occurrence. No pointers, process-local font IDs or global caches cross the wire.
 use super::{Bounded, MAX_WIRE_BYTES};
-use crate::para::{ClKind, Cluster, Glyph, StyleRun, wire::ParaRecord};
+use crate::para::{
+    ClKind, Cluster, Glyph, StyleRun,
+    wire::{ParaRecord, ParaRecordRef},
+};
 use crate::{DocLayout, Page, ParaLayout, Placed};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -23,6 +26,18 @@ struct Packet {
     glyphs: Vec<Vec<Glyph>>,
     clusters: Vec<Vec<Cluster>>,
     paras: Vec<ParaRecord>,
+    pages: Vec<PageRecord>,
+}
+
+// Write a byte-identical packet using views into the source layout instead of
+// cloning each paragraph's lines, rubies, metadata and other large fields.
+#[derive(Serialize)]
+struct PacketRef<'a> {
+    rp: Vec<ResolvedPara>,
+    styles: Vec<StyleRun>,
+    glyphs: Vec<Vec<Glyph>>,
+    clusters: Vec<Vec<Cluster>>,
+    paras: Vec<ParaRecordRef<'a>>,
     pages: Vec<PageRecord>,
 }
 
@@ -153,16 +168,16 @@ impl<T: DirectKey + Clone> DirectPool<T> {
 }
 
 #[derive(Default)]
-struct Builder {
+struct Builder<'a> {
     rp: Pool<ResolvedPara>,
     styles: Pool<StyleRun>,
     glyphs: DirectPool<Glyph>,
     clusters: DirectPool<Cluster>,
-    paras: Vec<ParaRecord>,
+    paras: Vec<ParaRecordRef<'a>>,
     para_ids: HashMap<*const ParaLayout, u32>,
 }
-impl Builder {
-    fn para(&mut self, p: &Arc<ParaLayout>) -> Result<u32, String> {
+impl<'a> Builder<'a> {
+    fn para(&mut self, p: &'a Arc<ParaLayout>) -> Result<u32, String> {
         let key = Arc::as_ptr(p);
         if let Some(id) = self.para_ids.get(&key) {
             return Ok(*id);
@@ -172,11 +187,11 @@ impl Builder {
         let styles = p.styles.iter().map(|s| self.styles.intern(s)).collect::<Result<_, _>>()?;
         let glyphs = self.glyphs.intern(&p.glyphs)?;
         let clusters = self.clusters.intern(&p.clusters)?;
-        self.paras.push(ParaRecord::from_layout(p, rp, styles, glyphs, clusters));
+        self.paras.push(ParaRecordRef::from_layout(p, rp, styles, glyphs, clusters));
         self.para_ids.insert(key, id);
         Ok(id)
     }
-    fn items(&mut self, items: &[Placed], depth: usize) -> Result<Vec<Item>, String> {
+    fn items(&mut self, items: &'a [Placed], depth: usize) -> Result<Vec<Item>, String> {
         if depth > 64 {
             return Err("Layout nesting exceeds limit".into());
         }
@@ -193,7 +208,7 @@ impl Builder {
             })
             .collect()
     }
-    fn page(&mut self, page: &Page) -> Result<PageRecord, String> {
+    fn page(&mut self, page: &'a Page) -> Result<PageRecord, String> {
         let mut meta = page.clone();
         meta.items.clear();
         meta.header.clear();
@@ -205,7 +220,7 @@ impl Builder {
 pub fn encode_interned(layout: &DocLayout) -> Result<Vec<u8>, String> {
     let mut builder = Builder::default();
     let pages = layout.pages.iter().map(|p| builder.page(p)).collect::<Result<_, _>>()?;
-    let packet = Packet {
+    let packet = PacketRef {
         rp: builder.rp.values,
         styles: builder.styles.values,
         glyphs: builder.glyphs.values,
