@@ -43,6 +43,7 @@ if (!isMainThread) {
   api.prewarm_public_fonts();
   const fonts = elapsed(t);
   parentPort.postMessage({ready:true,role,init,fonts,memory_bytes:instance.memory.buffer.byteLength});
+  const checkedBatches = new Set();
   parentPort.on('message', ({id,fixture,packet}) => {
     const phases={};
     let doc, probe, bytes;
@@ -66,6 +67,21 @@ if (!isMainThread) {
       doc=null;
       phases.dispose=elapsed(phase);
       phases.request=elapsed(total);
+      // Verify batching outside the CPU measurement on the first (warmup)
+      // request per fixture only. The production-equivalent phase values
+      // must not include extra verification work.
+      if (role==='producer' && workerData.verifyBatches && !checkedBatches.has(fixture)) {
+        const expected=hash(bytes);
+        const vdoc=api.DocumentProbe.from_fixture(fixture);
+        const vprobe=vdoc.layout();
+        try {
+          for (const limit of [1,2,3,7]) {
+            assert.equal(hash(vprobe.packet_batched(limit)),expected,`page batch ${limit} changed packet`);
+          }
+          assert.throws(() => vprobe.packet_batched(0));
+          checkedBatches.add(fixture);
+        } finally {vprobe.free();vdoc.free();}
+      }
       parentPort.postMessage({id,role,pages,phases,bytes},[bytes.buffer]);
     } catch(e) {
       try {probe?.free();doc?.free();} catch {}
@@ -81,7 +97,7 @@ if (!isMainThread) {
   const setup={};
   let nextId=0;
   async function create(role) {
-    const worker = new Worker(new URL(import.meta.url),{workerData:{module,glue,role}});
+    const worker = new Worker(new URL(import.meta.url),{workerData:{module,glue,role,verifyBatches:scaling}});
     const ready = await new Promise((resolve,reject)=>{
       const onMessage=x=>{if(x.ready){worker.off('message',onMessage);resolve(x);}};
       worker.on('message',onMessage);

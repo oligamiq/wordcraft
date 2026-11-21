@@ -104,6 +104,20 @@ impl Probe {
         }
     }
 
+    /// Experimental page-bounded dictionary construction within one WASM call.
+    /// This does NOT persist a continuation across Workers; finish still writes
+    /// the complete packet. It exists to prove byte equality across batch sizes.
+    pub fn packet_batched(&self, pages_per_batch: u32) -> Result<Vec<u8>, JsValue> {
+        if pages_per_batch == 0 {
+            return Err(failure("Page batch limit must be positive"));
+        }
+        let mut encoder = wire::InternedEncoder::new(&self.lay);
+        while encoder.remaining_pages() > 0 {
+            encoder.push_pages(pages_per_batch as usize).map_err(failure)?;
+        }
+        encoder.finish().map_err(failure)
+    }
+
     pub fn pdf(&self) -> Result<Vec<u8>, JsValue> {
         export_layout(&self.doc, &self.lay, &PdfOptions::default()).map_err(failure)
     }

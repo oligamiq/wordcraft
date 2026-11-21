@@ -285,20 +285,80 @@ impl<'a> Builder<'a> {
     }
 }
 
+/// Incremental dictionary construction for a finished layout. Pages must be
+/// visited in their original order to keep v3 first-occurrence IDs and bytes
+/// identical. This is an in-process borrowing session, NOT yet a persistable
+/// Cloudflare Worker continuation. Final serialization remains one operation.
+pub struct InternedEncoder<'a> {
+    layout: &'a DocLayout,
+    builder: Builder<'a>,
+    pages: Vec<PageRecordRef<'a>>,
+    next: usize,
+    failed: bool,
+}
+
+impl<'a> InternedEncoder<'a> {
+    pub fn new(layout: &'a DocLayout) -> Self {
+        Self { layout, builder: Builder::default(), pages: Vec::with_capacity(layout.pages.len()), next: 0, failed: false }
+    }
+
+    pub fn remaining_pages(&self) -> usize {
+        self.layout.pages.len() - self.next
+    }
+
+    /// Build up to limit more pages, without changing page order or shared
+    /// dictionary IDs. Use an explicit positive bound; zero is rejected rather
+    /// than silently spinning in a continuation loop.
+    pub fn push_pages(&mut self, limit: usize) -> Result<usize, String> {
+        if self.failed {
+            return Err("Interned encoder previously failed".into());
+        }
+        if limit == 0 {
+            return Err("Page batch limit must be positive".into());
+        }
+        let stop = self.next.saturating_add(limit).min(self.layout.pages.len());
+        let begin = self.next;
+        while self.next < stop {
+            match self.builder.page(&self.layout.pages[self.next]) {
+                Ok(page) => self.pages.push(page),
+                Err(error) => {
+                    self.failed = true;
+                    return Err(error);
+                }
+            }
+            self.next += 1;
+        }
+        Ok(self.next - begin)
+    }
+
+    /// Finishing before all pages are built is an error. Only fully completed
+    /// sessions can emit canonical FVLW v3 bytes, with existing size checks.
+    pub fn finish(self) -> Result<Vec<u8>, String> {
+        if self.failed {
+            return Err("Interned encoder previously failed".into());
+        }
+        if self.remaining_pages() != 0 {
+            return Err("Interned encoder has unprocessed pages".into());
+        }
+        let Self { builder, pages, .. } = self;
+        let packet = PacketRef {
+            rp: builder.rp.values,
+            styles: builder.styles.values,
+            glyphs: builder.glyphs.values,
+            clusters: builder.clusters.values,
+            paras: builder.paras,
+            pages,
+        };
+        let mut writer = Bounded(MAGIC.to_vec());
+        packet.serialize(&mut rmp_serde::Serializer::new(&mut writer).with_struct_map().with_human_readable()).map_err(|e| e.to_string())?;
+        Ok(writer.0)
+    }
+}
+
 pub fn encode_interned(layout: &DocLayout) -> Result<Vec<u8>, String> {
-    let mut builder = Builder::default();
-    let pages = layout.pages.iter().map(|p| builder.page(p)).collect::<Result<_, _>>()?;
-    let packet = PacketRef {
-        rp: builder.rp.values,
-        styles: builder.styles.values,
-        glyphs: builder.glyphs.values,
-        clusters: builder.clusters.values,
-        paras: builder.paras,
-        pages,
-    };
-    let mut writer = Bounded(MAGIC.to_vec());
-    packet.serialize(&mut rmp_serde::Serializer::new(&mut writer).with_struct_map().with_human_readable()).map_err(|e| e.to_string())?;
-    Ok(writer.0)
+    let mut encoder = InternedEncoder::new(layout);
+    encoder.push_pages(usize::MAX)?;
+    encoder.finish()
 }
 
 fn lookup<T>(table: &[T], id: u32) -> Result<&T, String> {

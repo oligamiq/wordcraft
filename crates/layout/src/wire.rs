@@ -7,7 +7,7 @@ use std::io::{self, Write};
 #[cfg(feature = "wire-layout-interned")]
 mod interned;
 #[cfg(feature = "wire-layout-interned")]
-pub use interned::{decode_interned, encode_interned};
+pub use interned::{InternedEncoder, decode_interned, encode_interned};
 
 const MAGIC: &[u8] = b"FVLW\x01";
 pub const MAX_WIRE_BYTES: usize = 16 * 1024 * 1024;
@@ -51,9 +51,7 @@ const COMPACT_MAGIC: &[u8] = b"FVLW\x02";
 pub fn encode_compact(layout: &DocLayout) -> Result<Vec<u8>, String> {
     use serde::Serialize;
     let mut writer = Bounded(COMPACT_MAGIC.to_vec());
-    let mut encoder = rmp_serde::Serializer::new(&mut writer)
-        .with_struct_map()
-        .with_human_readable();
+    let mut encoder = rmp_serde::Serializer::new(&mut writer).with_struct_map().with_human_readable();
     layout.pages.serialize(&mut encoder).map_err(|e| e.to_string())?;
     Ok(writer.0)
 }

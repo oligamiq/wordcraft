@@ -158,3 +158,38 @@ fn interned_layout_reuses_repeated_data_without_changing_layout() {
     trailing.push(0);
     assert!(wire::decode_interned(&trailing).is_err());
 }
+
+#[cfg(feature = "wire-layout-interned")]
+#[test]
+fn interned_encoder_page_batches_preserve_exact_wire_bytes() {
+    let mut doc = Document::from_text(&"A repeated paragraph with office ffi and 123.\n".repeat(240));
+    doc.styles.default_chr.font = Some("Source Sans 3".to_string());
+    let source = layout(&doc, &mut LayoutCache::new(), &LayoutOptions::default());
+    assert!(source.pages.len() >= 3);
+    let canonical = wire::encode_interned(&source).unwrap();
+
+    for batch in [1, 2, 3, 7, usize::MAX] {
+        let mut encoder = wire::InternedEncoder::new(&source);
+        assert_eq!(encoder.remaining_pages(), source.pages.len());
+        assert!(encoder.push_pages(0).is_err());
+        while encoder.remaining_pages() > 0 {
+            let remaining = encoder.remaining_pages();
+            let done = encoder.push_pages(batch).unwrap();
+            assert!(done > 0 && done <= remaining);
+            assert_eq!(encoder.remaining_pages(), remaining - done);
+        }
+        assert_eq!(encoder.push_pages(1).unwrap(), 0);
+        let bytes = encoder.finish().unwrap();
+        assert_eq!(bytes, canonical, "batch {batch} changed FVLW v3 bytes");
+        let restored = wire::decode_interned(&bytes).unwrap();
+        assert_eq!(wire::encode(&restored).unwrap(), wire::encode(&source).unwrap());
+    }
+
+    let mut unfinished = wire::InternedEncoder::new(&source);
+    assert_eq!(unfinished.push_pages(1).unwrap(), 1);
+    assert!(unfinished.finish().is_err());
+    let empty = wordcraft_layout::DocLayout::default();
+    let encoder = wire::InternedEncoder::new(&empty);
+    assert_eq!(encoder.remaining_pages(), 0);
+    assert_eq!(encoder.finish().unwrap(), wire::encode_interned(&empty).unwrap());
+}
