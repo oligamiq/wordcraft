@@ -465,9 +465,12 @@ mod block_boundary_tests {
     fn resume_body_blocks_across_new_instances_without_prefix_relayout() {
         let doc = plain_doc();
         let opts = LayoutOptions::default();
-        let expected = wire::encode(&layout(&doc, &mut LayoutCache::new(), &opts)).unwrap();
+        let reference = layout(&doc, &mut LayoutCache::new(), &opts);
+        let expected = wire::encode(&reference).unwrap();
+        let expected_interned = wire::encode_interned(&reference).unwrap();
         assert!(doc.body.len() >= 100);
         for batch_size in [1usize, 3, 13, 41] {
+            crate::pass::reset_placed_visits();
             let mut continuation: Option<Vec<u8>> = None;
             let mut progressed = 0usize;
             let mut completed = None;
@@ -490,7 +493,11 @@ mod block_boundary_tests {
                 }
             }
             assert_eq!(progressed + batch_size >= doc.body.len(), true, "must reach final blocks");
-            assert_eq!(wire::encode(&completed.expect("completed")).unwrap(), expected, "batch_size={batch_size}");
+            assert_eq!(crate::pass::take_placed_visits(), (0..doc.body.len()).collect::<Vec<_>>(), "each top-level block exactly once");
+            let actual = completed.expect("completed");
+            assert_eq!(actual.index, reference.index, "restored index differs");
+            assert_eq!(wire::encode(&actual).unwrap(), expected, "batch_size={batch_size}");
+            assert_eq!(wire::encode_interned(&actual).unwrap(), expected_interned, "v3 batch_size={batch_size}");
         }
     }
 

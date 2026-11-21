@@ -67,3 +67,10 @@ final whole-packet serializer, or guarantee any Worker request budget.
 
 Only the active CPU cost of the given Worker invocation is the primary
 metric. Mean CPU below the configured limit does not prove compliance.
+
+## 2026-11-22: experimental in-pass block state (plain text subset only)
+
+- FVLC v1 can now carry a serializable PlainBlockSnapshot of completed pages and open-page position, previous paragraph spacing, and the next body block. Each subsequent call rebuilds immutable context from the supplied document and lays only new blocks. Source/options digests are provided by the trusted caller; hash integrity is not authentication.
+- Explicitly rejects multi-section, tables, inline objects and fields, parts, images, numbering, columns, non-top vertical alignment, headers/footers and other unsupported structures. Does NOT snapshot full Ctx/PageBuilder/Snap, per-page note numbers, early floats, or column balancing; production Folivect integration is absent.
+- Native regression CI must check exact FVLW v1, interned v3 packet and output index across 1/3/13/41 block batches and new LayoutCache each call, and a test-only placement log must show each source top-level block visited exactly once (no prefix replay).
+- Caution: each snapshot currently reserializes all previously completed page items, which may cause O(N^2) cumulative CPU/bytes across many tiny calls. This is a correctness proof only, NOT a Workers Free <=10ms solution. Use real Cloudflare billed CPU and bounded-size/chunk strategies before product adoption. No compression, no independent-PDF concatenation.

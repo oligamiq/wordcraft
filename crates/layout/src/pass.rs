@@ -4,6 +4,8 @@ use std::collections::VecDeque;
 mod resume;
 #[cfg(feature = "wire-layout-interned")]
 pub(crate) use resume::{PlainBlockSnapshot, PlainStep, step as step_plain, supported as plain_supported};
+#[cfg(all(feature = "wire-layout-interned", test))]
+pub(crate) use resume::{reset_placed_visits, take_placed_visits};
 
 use super::cache::{LayoutCache, Totals, env_hash, hash_of};
 use super::ctx::{Ctx, Pass, with_pct_base};

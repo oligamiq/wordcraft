@@ -38,6 +38,21 @@ pub(crate) enum PlainStep {
     Complete(DocLayout),
 }
 
+#[cfg(test)]
+thread_local! {
+    static PLACED_BLOCK_VISITS: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_placed_visits() {
+    PLACED_BLOCK_VISITS.with(|v| v.borrow_mut().clear());
+}
+
+#[cfg(test)]
+pub(crate) fn take_placed_visits() -> Vec<usize> {
+    PLACED_BLOCK_VISITS.with(|v| std::mem::take(&mut *v.borrow_mut()))
+}
+
 pub(crate) fn supported(doc: &Document, opts: &LayoutOptions) -> bool {
     let s = &doc.last_section;
     opts.view == ViewMode::Print
@@ -195,6 +210,8 @@ pub(crate) fn step(
     }
     let end = first.saturating_add(max_blocks).min(doc.body.len());
     for block in first..end {
+        #[cfg(test)]
+        PLACED_BLOCK_VISITS.with(|v| v.borrow_mut().push(block));
         pb.mark_block();
         place_block(&mut ctx, &mut pb, &None, block, sec.tops.body);
     }
