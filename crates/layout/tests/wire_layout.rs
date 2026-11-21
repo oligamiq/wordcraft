@@ -193,3 +193,58 @@ fn interned_encoder_page_batches_preserve_exact_wire_bytes() {
     assert_eq!(encoder.remaining_pages(), 0);
     assert_eq!(encoder.finish().unwrap(), wire::encode_interned(&empty).unwrap());
 }
+
+/// Native Linux diagnostic only: FVLW dictionary building and final MessagePack
+/// emission use different phases. These are scheduled-thread CPU, not provider CPU.
+#[cfg(all(target_os = "linux", feature = "wire-layout-interned"))]
+#[test]
+#[ignore]
+fn profile_interned_batch_finish_cpu() {
+    use std::hint::black_box;
+    fn cpu_ms() -> f64 {
+        let s = std::fs::read_to_string("/proc/thread-self/schedstat").expect("Linux schedstat");
+        let ns: u64 = s.split_whitespace().next().unwrap().parse().unwrap();
+        ns as f64 * 1e-6
+    }
+    for (kind, varied) in [("repeated", false), ("varied", true)] {
+        let text = if varied {
+            (0..960).map(|i| format!("Paragraph {i}: {} {}", "office ".repeat(i % 7 + 1), i * 19)).collect::<Vec<_>>().join("\n")
+        } else {
+            "A paragraph with office ffi and 123, and a second sentence.\n".repeat(960)
+        };
+        let mut doc = Document::from_text(&text);
+        doc.styles.default_chr.font = Some("Source Sans 3".to_string());
+        let source = layout(&doc, &mut LayoutCache::new(), &LayoutOptions::default());
+        let expected = wire::encode_interned(&source).unwrap();
+        assert!(source.pages.len() >= 30);
+        for batch in [1, 3, 8] {
+            let mut build = Vec::new();
+            let mut finish = Vec::new();
+            for i in 0..22 {
+                let start = cpu_ms();
+                let mut encoder = wire::InternedEncoder::new(black_box(&source));
+                while encoder.remaining_pages() > 0 {
+                    encoder.push_pages(batch).unwrap();
+                }
+                let built = cpu_ms();
+                let bytes = black_box(encoder.finish().unwrap());
+                let finished = cpu_ms();
+                assert_eq!(bytes, expected);
+                if i >= 6 {
+                    build.push(built - start);
+                    finish.push(finished - built);
+                }
+            }
+            assert_eq!(build.len(), 16);
+            assert_eq!(finish.len(), 16);
+            let mean = |samples: &[f64]| samples.iter().sum::<f64>() / samples.len() as f64;
+            println!(
+                "FVLW_PHASE_CPU fixture={kind} pages={} batch={batch} n=16 build_mean_thread_ms={:.4} finish_mean_thread_ms={:.4} total_mean_thread_ms={:.4}",
+                source.pages.len(),
+                mean(&build),
+                mean(&finish),
+                mean(&build) + mean(&finish)
+            );
+        }
+    }
+}
