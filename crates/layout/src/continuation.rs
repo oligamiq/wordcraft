@@ -1,5 +1,149 @@
 //! Experimental source-bound transport envelope for future durable layout continuation.
-//! The payload is not yet a serializable pagination state; do not use it to resume layout.
+//! This format transports bytes, not a resumed layout state. Only trusted internal callers
+//! should provide the payload: SHA-256 detects corruption, not forgery or authenticity.
+
+use sha2::{Digest, Sha256};
+
+pub const MAX_PAYLOAD: usize = 16 * 1024 * 1024;
+const MAGIC: &[u8; 4] = b"FVLC";
+const VERSION: u8 = 1;
+const PREFIX_LEN: usize = 86;
+const HEADER_LEN: usize = PREFIX_LEN + 32;
+const MAX_ITERATION: u32 = 64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContinuationError {
+    Malformed,
+    WrongVersion,
+    InvalidPhase,
+    WrongSource,
+    WrongOptions,
+    Integrity,
+    OutOfBounds,
+    PayloadSize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Phase {
+    Paginating = 1,
+    Finalizing = 2,
+}
+
+impl Phase {
+    fn decode(raw: u8) -> Result<Self, ContinuationError> {
+        match raw {
+            1 => Ok(Self::Paginating),
+            2 => Ok(Self::Finalizing),
+            _ => Err(ContinuationError::InvalidPhase),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cursor {
+    pub phase: Phase,
+    pub iteration: u32,
+    pub section: u32,
+    pub block: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContinuationEnvelope {
+    pub source_digest: [u8; 32],
+    pub options_digest: [u8; 32],
+    pub cursor: Cursor,
+    pub payload: Vec<u8>,
+}
+
+fn validate_cursor(cursor: Cursor) -> Result<(), ContinuationError> {
+    if cursor.iteration > MAX_ITERATION {
+        return Err(ContinuationError::OutOfBounds);
+    }
+    Ok(())
+}
+
+fn digest(prefix: &[u8], payload: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(prefix);
+    hasher.update(payload);
+    hasher.finalize().into()
+}
+
+fn read_u32(input: &[u8], start: usize) -> u32 {
+    let mut chunk = [0; 4];
+    chunk.copy_from_slice(&input[start..start + 4]);
+    u32::from_le_bytes(chunk)
+}
+
+/// Packs an opaque continuation payload, deliberately without invoking layout.
+///
+/// Caller must supply digests of the complete immutable source and layout options.
+pub fn encode(envelope: &ContinuationEnvelope) -> Result<Vec<u8>, ContinuationError> {
+    validate_cursor(envelope.cursor)?;
+    if envelope.payload.is_empty() || envelope.payload.len() > MAX_PAYLOAD {
+        return Err(ContinuationError::PayloadSize);
+    }
+    let payload_len = u32::try_from(envelope.payload.len()).map_err(|_| ContinuationError::PayloadSize)?;
+    let mut bytes = Vec::with_capacity(HEADER_LEN + envelope.payload.len());
+    bytes.extend_from_slice(MAGIC);
+    bytes.push(VERSION);
+    bytes.push(envelope.cursor.phase as u8);
+    bytes.extend_from_slice(&envelope.cursor.iteration.to_le_bytes());
+    bytes.extend_from_slice(&envelope.cursor.section.to_le_bytes());
+    bytes.extend_from_slice(&envelope.cursor.block.to_le_bytes());
+    bytes.extend_from_slice(&envelope.source_digest);
+    bytes.extend_from_slice(&envelope.options_digest);
+    bytes.extend_from_slice(&payload_len.to_le_bytes());
+    let sum = digest(&bytes, &envelope.payload);
+    bytes.extend_from_slice(&sum);
+    bytes.extend_from_slice(&envelope.payload);
+    Ok(bytes)
+}
+
+/// Verifies a portable envelope but does not rehydrate pagination state.
+/// All inputs must be kept inside the authenticated gateway/private Worker boundary.
+pub fn decode(
+    bytes: &[u8],
+    expected_source: [u8; 32],
+    expected_options: [u8; 32],
+    section_limit: u32,
+    block_limit: u32,
+) -> Result<ContinuationEnvelope, ContinuationError> {
+    if bytes.len() < HEADER_LEN {
+        return Err(ContinuationError::Malformed);
+    }
+    if &bytes[..4] != MAGIC {
+        return Err(ContinuationError::Malformed);
+    }
+    if bytes[4] != VERSION {
+        return Err(ContinuationError::WrongVersion);
+    }
+    let phase = Phase::decode(bytes[5])?;
+    let cursor = Cursor { phase, iteration: read_u32(bytes, 6), section: read_u32(bytes, 10), block: read_u32(bytes, 14) };
+    validate_cursor(cursor)?;
+    let payload_len = usize::try_from(read_u32(bytes, 82)).map_err(|_| ContinuationError::PayloadSize)?;
+    if payload_len == 0 || payload_len > MAX_PAYLOAD {
+        return Err(ContinuationError::PayloadSize);
+    }
+    if bytes.len() != HEADER_LEN + payload_len {
+        return Err(ContinuationError::Malformed);
+    }
+    if cursor.section > section_limit || cursor.block > block_limit {
+        return Err(ContinuationError::OutOfBounds);
+    }
+    let payload = &bytes[HEADER_LEN..];
+    if digest(&bytes[..PREFIX_LEN], payload).as_slice() != &bytes[PREFIX_LEN..HEADER_LEN] {
+        return Err(ContinuationError::Integrity);
+    }
+    if &bytes[18..50] != expected_source.as_slice() {
+        return Err(ContinuationError::WrongSource);
+    }
+    if &bytes[50..82] != expected_options.as_slice() {
+        return Err(ContinuationError::WrongOptions);
+    }
+    Ok(ContinuationEnvelope { source_digest: expected_source, options_digest: expected_options, cursor, payload: payload.to_vec() })
+}
 
 #[cfg(test)]
 mod tests {

@@ -11,7 +11,7 @@ workspace = true
 [features]
 wire-layout = []
 wire-layout-msgpack = ["wire-layout", "dep:rmp-serde"]
-wire-layout-interned = ["wire-layout-msgpack"]
+wire-layout-interned = ["wire-layout-msgpack", "dep:sha2"]
 
 [dependencies]
 wordcraft-geom = { workspace = true, features = ["image"] }
@@ -25,6 +25,7 @@ unicode-linebreak = { workspace = true }
 unicode-segmentation = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true, optional = true }
 rmp-serde = { version = "=1.3.1", optional = true }
 image = { workspace = true }
 log = { workspace = true }
