@@ -38,12 +38,79 @@ struct PacketRef<'a> {
     glyphs: Vec<&'a [Glyph]>,
     clusters: Vec<&'a [Cluster]>,
     paras: Vec<ParaRecordRef<'a>>,
-    pages: Vec<PageRecord>,
+    pages: Vec<PageRecordRef<'a>>,
 }
 
 #[derive(Serialize, Deserialize)]
 struct PageRecord {
     meta: Page,
+    items: Vec<Item>,
+    header: Vec<Item>,
+    footer: Vec<Item>,
+}
+
+// Page's three item collections are encoded separately using dictionary
+// references. This borrowed metadata view serializes empty item collections,
+// without first cloning and then clearing every Placed item on the page.
+#[derive(Serialize)]
+struct PageMetaRef<'a> {
+    w: f32,
+    h: f32,
+    section: usize,
+    number: u32,
+    items: &'a [Placed],
+    header: &'a [Placed],
+    footer: &'a [Placed],
+    body: Rect,
+    header_story: Option<u32>,
+    footer_story: Option<u32>,
+    hf_slot: crate::placed::HfSlot,
+    first_block: usize,
+    markup: f32,
+    float_tables: &'a [Path],
+}
+
+impl<'a> PageMetaRef<'a> {
+    fn from_page(page: &'a Page) -> Self {
+        // Intentionally exhaust every Page field to fail compilation on schema changes.
+        let Page {
+            w,
+            h,
+            section,
+            number,
+            items: _,
+            header: _,
+            footer: _,
+            body,
+            header_story,
+            footer_story,
+            hf_slot,
+            first_block,
+            markup,
+            float_tables,
+        } = page;
+        Self {
+            w: *w,
+            h: *h,
+            section: *section,
+            number: *number,
+            items: &[],
+            header: &[],
+            footer: &[],
+            body: *body,
+            header_story: *header_story,
+            footer_story: *footer_story,
+            hf_slot: *hf_slot,
+            first_block: *first_block,
+            markup: *markup,
+            float_tables: float_tables.as_slice(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct PageRecordRef<'a> {
+    meta: PageMetaRef<'a>,
     items: Vec<Item>,
     header: Vec<Item>,
     footer: Vec<Item>,
@@ -208,12 +275,13 @@ impl<'a> Builder<'a> {
             })
             .collect()
     }
-    fn page(&mut self, page: &'a Page) -> Result<PageRecord, String> {
-        let mut meta = page.clone();
-        meta.items.clear();
-        meta.header.clear();
-        meta.footer.clear();
-        Ok(PageRecord { meta, items: self.items(&page.items, 0)?, header: self.items(&page.header, 0)?, footer: self.items(&page.footer, 0)? })
+    fn page(&mut self, page: &'a Page) -> Result<PageRecordRef<'a>, String> {
+        Ok(PageRecordRef {
+            meta: PageMetaRef::from_page(page),
+            items: self.items(&page.items, 0)?,
+            header: self.items(&page.header, 0)?,
+            footer: self.items(&page.footer, 0)?,
+        })
     }
 }
 
@@ -309,6 +377,32 @@ pub fn decode_interned(input: &[u8]) -> Result<DocLayout, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn borrowed_page_metadata_is_byte_identical_to_cloned_page() {
+        let mut source = Page {
+            w: 612.0,
+            h: 792.0,
+            section: 2,
+            number: 7,
+            body: Rect::new(50.0, 60.0, 520.0, 670.0),
+            first_block: 9,
+            markup: 12.0,
+            float_tables: vec![Path::default()],
+            ..Page::default()
+        };
+        source.items.push(Placed::Rule { x0: 1.0, y0: 2.0, x1: 3.0, y1: 4.0, border: wordcraft_doc::props::Border::default() });
+        let mut cloned = source.clone();
+        cloned.items.clear();
+        cloned.header.clear();
+        cloned.footer.clear();
+        let borrowed = PageMetaRef::from_page(&source);
+        let mut a = Vec::new();
+        cloned.serialize(&mut rmp_serde::Serializer::new(&mut a).with_struct_map().with_human_readable()).unwrap();
+        let mut b = Vec::new();
+        borrowed.serialize(&mut rmp_serde::Serializer::new(&mut b).with_struct_map().with_human_readable()).unwrap();
+        assert_eq!(a, b);
+    }
 
     #[test]
     fn borrowed_dictionary_arrays_preserve_exact_msgpack_bytes() {
