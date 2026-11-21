@@ -318,6 +318,7 @@ mod pass_boundary_tests {
 
     fn totals_fixture() -> Document {
         let mut doc = Document::from_text(&"Text on a separate line.\n".repeat(130));
+        doc.styles.default_chr.font = Some("Source Sans 3".into());
         let p = doc.para_mut(StoryRef::Body, &Path::top(0)).unwrap();
         let field =
             InlineObject::Field { instr: "NUMPAGES".into(), result: "9".into(), locked: false, dirty: false, code: false, form: String::new() };
