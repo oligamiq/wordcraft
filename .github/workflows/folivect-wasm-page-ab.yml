@@ -1,0 +1,74 @@
+name: Folivect WASM same-runner page-meta A/B diagnostic
+on:
+  push:
+    branches: [folivect/wasm-phase-probe]
+    paths: [.github/workflows/folivect-wasm-page-ab.yml]
+permissions:
+  contents: read
+jobs:
+  page-meta-ab:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.1'
+      - name: Build two exact fork commits on one runner
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.98.1 --profile minimal --target wasm32-unknown-unknown
+          export RUSTUP_TOOLCHAIN=1.98.1 CARGO_BUILD_JOBS=2
+          # Only the page metadata serialization differs between these revisions.
+          git worktree add --detach "$RUNNER_TEMP/before" 1c273c010f8365b040886003f36c0b049552eff2
+          git worktree add --detach "$RUNNER_TEMP/after" e34f0a50dded1367c04e87fcb0ad6b401949ac49
+          asset=wasm-bindgen-0.2.129-x86_64-unknown-linux-musl.tar.gz
+          mkdir -p "$RUNNER_TEMP/tools/gh-release"
+          curl --fail --location --silent --show-error "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.129/$asset" -o "$RUNNER_TEMP/tools/gh-release/$asset"
+          curl --fail --location --silent --show-error "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.129/$asset.sha256sum" -o "$RUNNER_TEMP/tools/$asset.sha256sum"
+          (cd "$RUNNER_TEMP/tools" && sha256sum --strict -c "$asset.sha256sum" && tar xzf "gh-release/$asset")
+          bindgen="$RUNNER_TEMP/tools/wasm-bindgen-0.2.129-x86_64-unknown-linux-musl/wasm-bindgen"
+          for tag in before after; do
+            export CARGO_TARGET_DIR="$RUNNER_TEMP/target-$tag"
+            (
+              cd "$RUNNER_TEMP/$tag"
+              cargo build --locked --release -p folivect-phase-probe --target wasm32-unknown-unknown
+            )
+            "$bindgen" --target web --out-dir "$RUNNER_TEMP/out-$tag" "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/folivect_phase_probe.wasm"
+          done
+      - name: Alternate exact PDF/CPU comparison
+        run: |
+          set -euo pipefail
+          node --version
+          # Two runs of each revision and opposite run order reduce thermal/order bias.
+          for tag in before after after before; do
+            idx=$(find "$RUNNER_TEMP" -maxdepth 1 -name "$tag-*.log" | wc -l)
+            node "$RUNNER_TEMP/$tag/crates/folivect-phase-probe/bench.mjs" "$RUNNER_TEMP/out-$tag" > "$RUNNER_TEMP/$tag-$idx.log"
+          done
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          import assert from 'node:assert/strict';
+          const root=process.env.RUNNER_TEMP;
+          const data={};
+          for(const tag of ['before','after']){
+            data[tag]=[0,1].map(i=>{
+              const rows=fs.readFileSync(`${root}/${tag}-${i}.log`,'utf8').split('\n').filter(s=>s.startsWith('WASM_PHASE_PROBE ')).map(s=>JSON.parse(s.slice('WASM_PHASE_PROBE '.length)));
+              assert.equal(rows.length,14);
+              return new Map(rows.map(x=>[`${x.fixture}:${x.name}`,x]));
+            });
+          }
+          for (const fixture of [0,1]) {
+            for(const name of ['mono','json_producer','json_consumer','msgpack_producer','msgpack_consumer','interned_producer','interned_consumer']){
+              const k=`${fixture}:${name}`;
+              const all=[...data.before,...data.after].map(m=>m.get(k));
+              assert.ok(all.every(Boolean),k);
+              assert.equal(new Set(all.map(x=>x.sha256)).size,1,`PDF content mismatch: ${k}`);
+              const measure=tag=>data[tag].map(m=>m.get(k).phases.total.thread_ms.mean);
+              const stages=tag=>data[tag].map(m=>Object.fromEntries(Object.entries(m.get(k).phases).map(([key,v])=>[key,v.thread_ms.mean])));
+              console.log('SAME_RUNNER_AB',JSON.stringify({fixture,name,before_cpu_ms:measure('before'),after_cpu_ms:measure('after'),before_stages:stages('before'),after_stages:stages('after')}));
+            }
+          }
+          JS
