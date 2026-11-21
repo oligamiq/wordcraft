@@ -38,3 +38,14 @@
 - Stable on-wire digest must bind complete state header and payload.
 - Reject partial, trailing and oversized frames before allocation.
 - Never claim 10ms compliance or full Worker restart from envelope-only tests.
+
+## Task 2a: multipass-only portable checkpoint (CURRENT incremental milestone)
+
+**Interface:** `continuation::layout_one_pass(doc, cache, opts, checkpoint, expected_source_digest, expected_options_digest) -> Result<LayoutPassStep, ContinuationError>`.
+
+- RED: `page_total_restarts_only_the_next_pass_across_fresh_caches`, `restart_rejects_wrong_source_options_and_payload_phase`, `unsupported_page_footnote_restart_fails_without_partial_output`. Test-only commit `e2d7af0`, CI `44931398781` initially pending.
+- GREEN: serialize only finalized pass driver state (page total guess per section and completed pass count), then restore into a fresh layout pass; do not serialize Ctx or PageBuilder yet.
+- Explicitly reject per-page footnote restarts and early-float rewrap until full state schema exists. One pass still processes all blocks; no <=10ms claim.
+- Validate canonical wire output after the completion boundary against the unmodified complete layout; validate source/options digest binding and corrupt checkpoint handling.
+- Require fresh off-host CI with the pass-boundary tests actually selected by the workflow, not merely compiled/filtered out.
+- This milestone is NOT Task 2 complete and does not satisfy the no-replay-in-block acceptance; Task 2b remains the owned Ctx/PageBuilder/Snap state and bounded block advance.

@@ -21,6 +21,8 @@ pub enum ContinuationError {
     Integrity,
     OutOfBounds,
     PayloadSize,
+    InvalidState,
+    Unsupported,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,6 +145,98 @@ pub fn decode(
         return Err(ContinuationError::WrongOptions);
     }
     Ok(ContinuationEnvelope { source_digest: expected_source, options_digest: expected_options, cursor, payload: payload.to_vec() })
+}
+
+/// One complete layout pass per invocation; this is not block-level continuation.
+/// Each Continue checkpoint contains only total-page pass state. Multipass
+/// pagination may necessarily reflow earlier pages in subsequent passes.
+pub enum LayoutPassStep {
+    Continue(Vec<u8>),
+    Complete(crate::DocLayout),
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PassCheckpoint {
+    totals: crate::cache::Totals,
+    passes: u32,
+}
+
+/// Advances just one complete multipass layout pass using a portable FVLC envelope.
+///
+/// This experimental API deliberately declines inputs requiring per-page note restarts
+/// or early-float rewrap; those need more state. It does not limit CPU inside one pass.
+/// Source and options digests must be calculated and bound by the trusted caller
+/// from canonical immutable input; this API does not authenticate them.
+pub fn layout_one_pass(
+    doc: &crate::Document,
+    cache: &mut crate::LayoutCache,
+    opts: &crate::LayoutOptions,
+    checkpoint: Option<&[u8]>,
+    source_digest: [u8; 32],
+    options_digest: [u8; 32],
+) -> Result<LayoutPassStep, ContinuationError> {
+    use crate::cache::MAX_TOTAL_PASSES;
+    use crate::ctx::Pass;
+    use crate::floats::EarlyFloats;
+    use crate::{HashMap, ViewMode};
+    use wordcraft_doc::section::NoteRestart;
+
+    let sections = doc.sections();
+    let per_page = opts.view == ViewMode::Print && sections.iter().any(|(_, s)| doc.note_options(s, false).num_restart == NoteRestart::EachPage);
+    if per_page {
+        return Err(ContinuationError::Unsupported);
+    }
+
+    let state = match checkpoint {
+        None => PassCheckpoint { totals: crate::cache::Totals::first_guess(sections.len()), passes: 0 },
+        Some(bytes) => {
+            let section_limit = u32::try_from(sections.len()).map_err(|_| ContinuationError::OutOfBounds)?;
+            let block_limit = u32::try_from(doc.body.len()).map_err(|_| ContinuationError::OutOfBounds)?;
+            let envelope = decode(bytes, source_digest, options_digest, section_limit, block_limit)?;
+            if envelope.cursor.phase != Phase::Paginating || envelope.cursor.section != 0 || envelope.cursor.block != 0 {
+                return Err(ContinuationError::InvalidState);
+            }
+            let state: PassCheckpoint = serde_json::from_slice(&envelope.payload).map_err(|_| ContinuationError::InvalidState)?;
+            if state.passes != envelope.cursor.iteration || state.passes > MAX_TOTAL_PASSES as u32 || !state.totals.valid_checkpoint(sections.len()) {
+                return Err(ContinuationError::InvalidState);
+            }
+            state
+        }
+    };
+
+    // A new instance can reconstruct immutable section/header references from doc.
+    // No raw pointers or layout caches are carried across this pass boundary.
+    let empty_note_pages = HashMap::new();
+    let empty_early_floats = EarlyFloats::new();
+    let outcome = crate::layout_pass(
+        doc,
+        cache,
+        opts,
+        &empty_note_pages,
+        &state.totals,
+        state.passes < MAX_TOTAL_PASSES as u32,
+        (&empty_early_floats, true),
+        usize::MAX,
+    );
+    match outcome {
+        Pass::Again(totals) => {
+            let next_pass = state.passes.checked_add(1).ok_or(ContinuationError::InvalidState)?;
+            if next_pass > MAX_TOTAL_PASSES as u32 || !totals.valid_checkpoint(sections.len()) {
+                return Err(ContinuationError::InvalidState);
+            }
+            let next = PassCheckpoint { totals, passes: next_pass };
+            let payload = serde_json::to_vec(&next).map_err(|_| ContinuationError::InvalidState)?;
+            let envelope = ContinuationEnvelope {
+                source_digest,
+                options_digest,
+                cursor: Cursor { phase: Phase::Paginating, iteration: next_pass, section: 0, block: 0 },
+                payload,
+            };
+            Ok(LayoutPassStep::Continue(encode(&envelope)?))
+        }
+        Pass::Done(layout) => Ok(LayoutPassStep::Complete(layout)),
+        Pass::Rewrap(_) => Err(ContinuationError::Unsupported),
+    }
 }
 
 #[cfg(test)]

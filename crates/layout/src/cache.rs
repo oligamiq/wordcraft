@@ -140,6 +140,7 @@ pub(crate) fn has_total_fields(p: &Paragraph) -> bool {
 
 /// Page totals: of the document, and of each section (by index).
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "wire-layout-interned", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) struct Totals {
     pub(crate) pages: u32,
     sections: Vec<u32>,
@@ -181,6 +182,10 @@ impl Totals {
     }
     pub(crate) fn section(&self, si: usize) -> u32 {
         self.sections.get(si).copied().unwrap_or(1)
+    }
+    #[cfg(feature = "wire-layout-interned")]
+    pub(crate) fn valid_checkpoint(&self, count: usize) -> bool {
+        self.pages > 0 && self.pages <= 1_000_000 && self.sections.len() == count && self.sections.iter().all(|&n| n > 0 && n <= self.pages)
     }
 }
 
