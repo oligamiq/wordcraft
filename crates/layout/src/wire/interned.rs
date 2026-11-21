@@ -35,8 +35,8 @@ struct Packet {
 struct PacketRef<'a> {
     rp: Vec<ResolvedPara>,
     styles: Vec<StyleRun>,
-    glyphs: Vec<Vec<Glyph>>,
-    clusters: Vec<Vec<Cluster>>,
+    glyphs: Vec<&'a [Glyph]>,
+    clusters: Vec<&'a [Cluster]>,
     paras: Vec<ParaRecordRef<'a>>,
     pages: Vec<PageRecord>,
 }
@@ -132,17 +132,17 @@ impl DirectKey for Cluster {
             && dot == ot
     }
 }
-struct DirectPool<T> {
-    values: Vec<Vec<T>>,
+struct DirectPool<'a, T> {
+    values: Vec<&'a [T]>,
     ids: HashMap<u64, Vec<u32>>,
 }
-impl<T> Default for DirectPool<T> {
+impl<'a, T> Default for DirectPool<'a, T> {
     fn default() -> Self {
         Self { values: Vec::new(), ids: HashMap::new() }
     }
 }
-impl<T: DirectKey + Clone> DirectPool<T> {
-    fn intern(&mut self, value: &[T]) -> Result<u32, String> {
+impl<'a, T: DirectKey> DirectPool<'a, T> {
+    fn intern(&mut self, value: &'a [T]) -> Result<u32, String> {
         let mut hasher = DefaultHasher::new();
         value.len().hash(&mut hasher);
         for entry in value {
@@ -151,7 +151,7 @@ impl<T: DirectKey + Clone> DirectPool<T> {
         self.intern_with_hash(value, hasher.finish())
     }
 
-    fn intern_with_hash(&mut self, value: &[T], hash: u64) -> Result<u32, String> {
+    fn intern_with_hash(&mut self, value: &'a [T], hash: u64) -> Result<u32, String> {
         if let Some(candidates) = self.ids.get(&hash) {
             for &id in candidates {
                 let candidate = lookup(&self.values, id)?;
@@ -161,7 +161,7 @@ impl<T: DirectKey + Clone> DirectPool<T> {
             }
         }
         let id = u32::try_from(self.values.len()).map_err(|_| "Too many dictionary entries")?;
-        self.values.push(value.to_vec());
+        self.values.push(value);
         self.ids.entry(hash).or_default().push(id);
         Ok(id)
     }
@@ -171,8 +171,8 @@ impl<T: DirectKey + Clone> DirectPool<T> {
 struct Builder<'a> {
     rp: Pool<ResolvedPara>,
     styles: Pool<StyleRun>,
-    glyphs: DirectPool<Glyph>,
-    clusters: DirectPool<Cluster>,
+    glyphs: DirectPool<'a, Glyph>,
+    clusters: DirectPool<'a, Cluster>,
     paras: Vec<ParaRecordRef<'a>>,
     para_ids: HashMap<*const ParaLayout, u32>,
 }
@@ -309,6 +309,32 @@ pub fn decode_interned(input: &[u8]) -> Result<DocLayout, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn borrowed_dictionary_arrays_preserve_exact_msgpack_bytes() {
+        fn assert_same<T: serde::Serialize>(owned: Vec<Vec<T>>) {
+            let borrowed: Vec<&[T]> = owned.iter().map(Vec::as_slice).collect();
+            let mut a = Vec::new();
+            owned.serialize(&mut rmp_serde::Serializer::new(&mut a).with_struct_map().with_human_readable()).unwrap();
+            let mut b = Vec::new();
+            borrowed.serialize(&mut rmp_serde::Serializer::new(&mut b).with_struct_map().with_human_readable()).unwrap();
+            assert_eq!(a, b, "borrowed dictionary arrays must not change v3 bytes");
+        }
+        assert_same(vec![vec![Glyph { gid: 14, dx: -0.0, dy: f32::from_bits(0x7fc00001) }], vec![]]);
+        assert_same(vec![vec![Cluster {
+            start: 1,
+            end: 3,
+            adv: -0.0,
+            kind: ClKind::Object(7),
+            style: 2,
+            g0: 1,
+            g1: 2,
+            break_after: true,
+            obj_h: 4.0,
+            obj_d: 5.0,
+            dot: false,
+        }]]);
+    }
 
     #[test]
     fn direct_pool_distinguishes_float_bits_and_retains_first_occurrence() {
