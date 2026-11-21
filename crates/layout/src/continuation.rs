@@ -213,3 +213,75 @@ mod tests {
         assert_eq!(encode(&envelope), Err(ContinuationError::OutOfBounds));
     }
 }
+// A complete multipass-layout boundary is the first true resumable execution unit.
+// Block-level pause/restore, notes and early-float rewrap remain later stages.
+#[cfg(test)]
+mod pass_boundary_tests {
+    use super::*;
+    use crate::{LayoutCache, LayoutOptions, layout, wire};
+    use wordcraft_doc::section::{NoteProps, NoteRestart};
+    use wordcraft_doc::{Document, InlineObject, Path, StoryRef};
+
+    fn totals_fixture() -> Document {
+        let mut doc = Document::from_text(&"Text on a separate line.\n".repeat(130));
+        let p = doc.para_mut(StoryRef::Body, &Path::top(0)).unwrap();
+        let field =
+            InlineObject::Field { instr: "NUMPAGES".into(), result: "9".into(), locked: false, dirty: false, code: false, form: String::new() };
+        p.insert_object(p.len(), field, &Default::default()).unwrap();
+        doc
+    }
+
+    #[test]
+    fn page_total_restarts_only_the_next_pass_across_fresh_caches() {
+        let doc = totals_fixture();
+        let opts = LayoutOptions::default();
+        let expected = layout(&doc, &mut LayoutCache::new(), &opts);
+        assert!(expected.pages.len() > 1);
+        let original = wire::encode(&expected).unwrap();
+        let mut checkpoint = None;
+        let mut took_continuation = false;
+        let mut result = None;
+        for _ in 0..8 {
+            let mut cache = LayoutCache::new(); // model a fresh Worker / WASM instance
+            match layout_one_pass(&doc, &mut cache, &opts, checkpoint.as_deref(), [0x11; 32], [0x22; 32]).unwrap() {
+                LayoutPassStep::Continue(blob) => {
+                    assert!(!blob.is_empty());
+                    checkpoint = Some(blob);
+                    took_continuation = true;
+                }
+                LayoutPassStep::Complete(layout) => {
+                    result = Some(layout);
+                    break;
+                }
+            }
+        }
+        assert!(took_continuation, "fixture must force at least two real passes");
+        assert_eq!(wire::encode(&result.unwrap()).unwrap(), original);
+    }
+
+    #[test]
+    fn restart_rejects_wrong_source_options_and_payload_phase() {
+        let doc = totals_fixture();
+        let opts = LayoutOptions::default();
+        let mut cache = LayoutCache::new();
+        let LayoutPassStep::Continue(bytes) = layout_one_pass(&doc, &mut cache, &opts, None, [0x11; 32], [0x22; 32]).unwrap() else {
+            panic!("expected a totals correction pass")
+        };
+        assert!(matches!(layout_one_pass(&doc, &mut cache, &opts, Some(&bytes), [0x44; 32], [0x22; 32]), Err(ContinuationError::WrongSource)));
+        assert!(matches!(layout_one_pass(&doc, &mut cache, &opts, Some(&bytes), [0x11; 32], [0x44; 32]), Err(ContinuationError::WrongOptions)));
+        let mut bad = decode(&bytes, [0x11; 32], [0x22; 32], u32::MAX, u32::MAX).unwrap();
+        bad.cursor.phase = Phase::Finalizing;
+        let forged = encode(&bad).unwrap();
+        assert!(matches!(layout_one_pass(&doc, &mut cache, &opts, Some(&forged), [0x11; 32], [0x22; 32]), Err(ContinuationError::InvalidState)));
+    }
+
+    #[test]
+    fn unsupported_page_footnote_restart_fails_without_partial_output() {
+        let mut doc = totals_fixture();
+        doc.settings.footnote_pr = NoteProps { num_restart: Some(NoteRestart::EachPage), ..Default::default() };
+        assert!(matches!(
+            layout_one_pass(&doc, &mut LayoutCache::new(), &LayoutOptions::default(), None, [0x11; 32], [0x22; 32]),
+            Err(ContinuationError::Unsupported)
+        ));
+    }
+}
