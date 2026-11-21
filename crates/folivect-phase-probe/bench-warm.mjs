@@ -19,11 +19,18 @@ const golden = [
   'dbb7f2dcf262688e485a95bd1db55c247131eec244b5713b6d3962b7afbfa918',
 ];
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+// Default remains the pinned 120-paragraph suite. Scaling diagnostics are
+// bounded and explicitly separate from the baseline time-series.
+const scaling = process.argv[3] === '--scale';
+if (process.argv[3] && !scaling) throw Error('Unknown benchmark mode');
+const suite = scaling ? [0,1,2,3,4,5,6,7] : [0,1];
+const warmups = scaling ? 3 : 12;
+const samples = scaling ? 12 : 32;
 const stats = values => {
-  assert.equal(values.length,32);
+  assert.equal(values.length,samples);
   const a=[...values].sort((x,y)=>x-y);
   assert.ok(a.every(x=>Number.isFinite(x)&&x>=0));
-  return {n:a.length,mean:a.reduce((s,x)=>s+x,0)/a.length,p95:a[30],max:a[31]};
+  return {n:a.length,mean:a.reduce((s,x)=>s+x,0)/a.length,p95:a[Math.ceil(a.length*.95)-1],max:a.at(-1)};
 };
 
 if (!isMainThread) {
@@ -101,9 +108,13 @@ if (!isMainThread) {
   }
   try {
     for(const role of ['producer','consumer','mono'])await create(role);
-    for(const fixture of [0,1]) {
+    for(const fixture of suite) {
+      const reference=await call('mono',fixture);
+      assert.ok(reference.pages>0,'no pages');
+      const expectedHash=hash(reference.bytes);
+      if(fixture<golden.length) assert.equal(expectedHash,golden[fixture],'original pinned PDF changed');
       const records={producer:[],consumer:[],mono:[]};
-      for(let i=-12;i<32;i++){
+      for(let i=-warmups;i<samples;i++){
         // Alternate the mono baseline relative to the two-stage pipeline.
         let p,c,m;
         if(i%2===0)m=await call('mono',fixture);
@@ -111,19 +122,22 @@ if (!isMainThread) {
         c=await call('consumer',fixture,p.bytes);
         if(i%2!==0)m=await call('mono',fixture);
         for(const x of [p,c,m]){
-          assert.equal(x.pages,5);
-          if(x.role!=='producer')assert.equal(hash(x.bytes),golden[fixture],`PDF mismatch ${fixture}:${x.role}`);
+          assert.equal(x.pages,reference.pages,'page count drift');
+          if(x.role!=='producer')assert.equal(hash(x.bytes),expectedHash,`PDF mismatch ${fixture}:${x.role}`);
           if(i>=0)records[x.role].push(x.phases);
         }
       }
       for(const role of ['producer','consumer','mono']){
         const r=records[role];
-        assert.equal(r.length,32);
+        assert.equal(r.length,samples);
         const phases=Object.fromEntries(Object.keys(r[0]).map(key=>[key,{
           thread_ms:stats(r.map(x=>x[key].thread_ms)),
           wall_ms:stats(r.map(x=>x[key].wall_ms)),
         }]));
-        console.log('WASM_REUSED_ISOLATE_CPU',JSON.stringify({fixture,role,pages:5,sha256:golden[fixture],phases}));
+        console.log(scaling?'WASM_SCALING_CPU':'WASM_REUSED_ISOLATE_CPU',JSON.stringify({
+          fixture,paragraphs:120*(2**Math.floor(fixture/2)),role,pages:reference.pages,
+          sha256:expectedHash,phases,
+        }));
       }
     }
   } finally {

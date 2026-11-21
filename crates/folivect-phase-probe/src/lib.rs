@@ -10,10 +10,19 @@ fn failure(e: impl std::fmt::Display) -> JsValue {
 }
 
 fn fixture(kind: u32) -> Result<Document, JsValue> {
-    let text = match kind {
-        0 => "A paragraph with office ffi and 123, and a second sentence.\n".repeat(120),
-        1 => (0..120).map(|i| format!("Paragraph {i}: {} {}", "office ".repeat(i % 7 + 1), i * 19)).collect::<Vec<_>>().join("\n"),
+    // Preserve kinds 0/1 byte-for-byte: they are pinned by existing PDF goldens.
+    // Additional fixture kinds stress layout scaling without private documents.
+    let count = match kind {
+        0 | 1 => 120,
+        2 | 3 => 240,
+        4 | 5 => 480,
+        6 | 7 => 960,
         _ => return Err(failure("Unknown fixture")),
+    };
+    let text = if kind % 2 == 0 {
+        "A paragraph with office ffi and 123, and a second sentence.\n".repeat(count)
+    } else {
+        (0..count).map(|i| format!("Paragraph {i}: {} {}", "office ".repeat(i % 7 + 1), i * 19)).collect::<Vec<_>>().join("\n")
     };
     let mut doc = Document::from_text(&text);
     doc.styles.default_chr.font = Some("Source Sans 3".into());

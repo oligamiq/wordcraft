@@ -48,3 +48,7 @@ jobs:
         run: |
           set -euo pipefail
           node crates/folivect-phase-probe/bench-warm.mjs probe-output
+      - name: Characterize paragraph-count scaling without production traffic
+        run: |
+          set -euo pipefail
+          node crates/folivect-phase-probe/bench-warm.mjs probe-output --scale
