@@ -339,13 +339,18 @@ mod tests {
     #[test]
     fn direct_pool_distinguishes_float_bits_and_retains_first_occurrence() {
         let glyph = |dx: f32| Glyph { gid: 12, dx, dy: 0.0 };
+        // This pool retains borrowed slices: each backing array must outlive it.
+        let zero = [glyph(0.0)];
+        let negative_zero = [glyph(-0.0)];
+        let nan_one = [glyph(f32::from_bits(0x7fc00001))];
+        let nan_two = [glyph(f32::from_bits(0x7fc00002))];
         let mut pool = DirectPool::<Glyph>::default();
-        assert_eq!(pool.intern(&[glyph(0.0)]).unwrap(), 0);
-        assert_eq!(pool.intern(&[glyph(-0.0)]).unwrap(), 1);
-        assert_eq!(pool.intern(&[glyph(0.0)]).unwrap(), 0);
-        assert_eq!(pool.intern(&[glyph(f32::from_bits(0x7fc00001))]).unwrap(), 2);
-        assert_eq!(pool.intern(&[glyph(f32::from_bits(0x7fc00002))]).unwrap(), 3);
-        assert_eq!(pool.intern(&[glyph(f32::from_bits(0x7fc00001))]).unwrap(), 2);
+        assert_eq!(pool.intern(&zero).unwrap(), 0);
+        assert_eq!(pool.intern(&negative_zero).unwrap(), 1);
+        assert_eq!(pool.intern(&zero).unwrap(), 0);
+        assert_eq!(pool.intern(&nan_one).unwrap(), 2);
+        assert_eq!(pool.intern(&nan_two).unwrap(), 3);
+        assert_eq!(pool.intern(&nan_one).unwrap(), 2);
         assert_eq!(pool.values.len(), 4);
     }
 
