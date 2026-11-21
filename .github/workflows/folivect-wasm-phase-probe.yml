@@ -21,7 +21,7 @@ jobs:
           rustup toolchain install 1.98.1 --profile minimal
           export RUSTUP_TOOLCHAIN=1.98.1 CARGO_BUILD_JOBS=2
           cargo test --locked -p wordcraft-fonts --lib bundled_digest_matches_embedded_bytes_only
-          cargo test --locked -p wordcraft-layout --features wire-layout-interned --lib borrowed_paragraph_is_byte_identical_to_owned_record
+          cargo test --locked -p wordcraft-layout --features wire-layout-interned --lib wire::
           cargo test --locked -p wordcraft-layout --features wire-layout-interned --test wire_layout
       - name: Build independent WASM probe
         run: |
