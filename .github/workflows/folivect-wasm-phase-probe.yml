@@ -22,6 +22,7 @@ jobs:
           export RUSTUP_TOOLCHAIN=1.98.1 CARGO_BUILD_JOBS=2
           cargo test --locked -p wordcraft-fonts --lib bundled_digest_matches_embedded_bytes_only
           cargo test --locked -p wordcraft-layout --features wire-layout-interned --lib wire::
+          cargo test --locked -p wordcraft-layout --features wire-layout-interned --lib block_batched_layout_preserves_multipass_pagination_and_exact_wire
           cargo test --locked -p wordcraft-layout --features wire-layout-interned --test wire_layout
       - name: Profile page dictionary construction and final serializer CPU (native)
         run: |

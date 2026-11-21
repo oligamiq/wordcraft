@@ -12863,3 +12863,43 @@ fn header_margin_table_area() {
 }
 
 mod shape_alpha;
+
+/// Experimental cooperative body-block stepping must preserve all pagination
+/// results, including later passes that settle totals, notes, and early floats.
+/// This is an in-process API; it does not promise cross-isolate resume.
+#[cfg(feature = "wire-layout-interned")]
+#[test]
+fn block_batched_layout_preserves_multipass_pagination_and_exact_wire() {
+    use wordcraft_doc::section::{NoteProps, NoteRestart, SectionStart};
+
+    let mut with_totals = Document::from_text(&"One line of body text.\n".repeat(130));
+    with_totals.styles.default_chr.font = Some(WRAP_TEST_FONT.into());
+    with_totals.settings.footnote_pr = NoteProps { num_restart: Some(NoteRestart::EachPage), ..Default::default() };
+    footnote(&mut with_totals, &Pos::body(2, 4), "First footnote");
+    footnote(&mut with_totals, &Pos::body(110, 4), "Later footnote");
+    let p = with_totals.para_mut(StoryRef::Body, &Path::top(0)).unwrap();
+    let field = InlineObject::Field { instr: "NUMPAGES".into(), result: "9".into(), locked: false, dirty: false, code: false, form: String::new() };
+    p.insert_object(p.len(), field, &Default::default()).unwrap();
+
+    let mut with_columns = two_column_section(SectionStart::Continuous, Vec::new());
+    with_columns.styles.default_chr.font = Some(WRAP_TEST_FONT.into());
+    let mut with_early_float = early_float_across_pages();
+    with_early_float.styles.default_chr.font = Some(WRAP_TEST_FONT.into());
+
+    for (label, doc) in
+        [("page_totals_and_page_notes", with_totals), ("continuous_balanced_columns", with_columns), ("early_float_rewrap", with_early_float)]
+    {
+        let options = LayoutOptions::default();
+        let reference = layout(&doc, &mut LayoutCache::new(), &options);
+        let reference_wire = wire::encode(&reference).unwrap();
+        let reference_interned = wire::encode_interned(&reference).unwrap();
+        assert!(!reference.index.is_empty(), "{label}");
+        for batch in [1, 2, 3, 7, usize::MAX] {
+            let actual = layout_in_block_batches(&doc, &mut LayoutCache::new(), &options, batch).unwrap();
+            assert_eq!(actual.index, reference.index, "index mismatch: {label}, batch={batch}");
+            assert_eq!(wire::encode(&actual).unwrap(), reference_wire, "page mismatch: {label}, batch={batch}");
+            assert_eq!(wire::encode_interned(&actual).unwrap(), reference_interned, "interned mismatch: {label}, batch={batch}");
+        }
+        assert!(layout_in_block_batches(&doc, &mut LayoutCache::new(), &options, 0).is_err());
+    }
+}
