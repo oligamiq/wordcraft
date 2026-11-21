@@ -1,5 +1,10 @@
 use std::collections::VecDeque;
 
+#[cfg(feature = "wire-layout-interned")]
+mod resume;
+#[cfg(feature = "wire-layout-interned")]
+pub(crate) use resume::{PlainBlockSnapshot, PlainStep, step as step_plain, supported as plain_supported};
+
 use super::cache::{LayoutCache, Totals, env_hash, hash_of};
 use super::ctx::{Ctx, Pass, with_pct_base};
 use super::floats::{EarlyFloats, WrapArea, early_covered};

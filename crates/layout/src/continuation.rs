@@ -239,6 +239,72 @@ pub fn layout_one_pass(
     }
 }
 
+/// A portable in-pass checkpoint for plain, single-section, one-column print
+/// documents only. It owns completed page items and open-page position. The
+/// caller must compute and bind the full source/options SHA-256 digests.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct BlockCheckpoint {
+    schema: u32,
+    state: crate::pass::PlainBlockSnapshot,
+}
+
+/// Advances at most max_blocks body blocks inside one layout pass.
+///
+/// No prior body paragraph is relaid on resume. Complex documents return
+/// Unsupported until notes/floats/column balancing have portable snapshots.
+/// An invocation can still exceed 10ms due to one block or packet copying.
+pub fn layout_in_resumable_blocks(
+    doc: &crate::Document,
+    cache: &mut crate::LayoutCache,
+    opts: &crate::LayoutOptions,
+    checkpoint: Option<&[u8]>,
+    source_digest: [u8; 32],
+    options_digest: [u8; 32],
+    max_blocks: usize,
+) -> Result<LayoutPassStep, ContinuationError> {
+    if max_blocks == 0 {
+        return Err(ContinuationError::OutOfBounds);
+    }
+    if !crate::pass::plain_supported(doc, opts) {
+        return Err(ContinuationError::Unsupported);
+    }
+    let saved = match checkpoint {
+        None => None,
+        Some(bytes) => {
+            let len = u32::try_from(doc.body.len()).map_err(|_| ContinuationError::OutOfBounds)?;
+            let envelope = decode(bytes, source_digest, options_digest, 1, len)?;
+            if envelope.cursor.phase != Phase::Paginating || envelope.cursor.iteration != 0 || envelope.cursor.section != 0 {
+                return Err(ContinuationError::InvalidState);
+            }
+            let decoded: BlockCheckpoint = serde_json::from_slice(&envelope.payload).map_err(|_| ContinuationError::InvalidState)?;
+            if decoded.schema != 1
+                || decoded.state.next_block == 0
+                || decoded.state.next_block >= doc.body.len()
+                || decoded.state.next_block != envelope.cursor.block as usize
+            {
+                return Err(ContinuationError::InvalidState);
+            }
+            Some(decoded.state)
+        }
+    };
+
+    match crate::pass::step_plain(doc, cache, opts, saved, max_blocks)? {
+        crate::pass::PlainStep::Complete(layout) => Ok(LayoutPassStep::Complete(layout)),
+        crate::pass::PlainStep::Continue(state) => {
+            let block = u32::try_from(state.next_block).map_err(|_| ContinuationError::OutOfBounds)?;
+            let checkpoint = BlockCheckpoint { schema: 1, state };
+            let payload = serde_json::to_vec(&checkpoint).map_err(|_| ContinuationError::InvalidState)?;
+            let envelope = ContinuationEnvelope {
+                source_digest,
+                options_digest,
+                cursor: Cursor { phase: Phase::Paginating, iteration: 0, section: 0, block },
+                payload,
+            };
+            Ok(LayoutPassStep::Continue(encode(&envelope)?))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

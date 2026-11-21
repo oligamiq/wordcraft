@@ -49,3 +49,10 @@
 - Validate canonical wire output after the completion boundary against the unmodified complete layout; validate source/options digest binding and corrupt checkpoint handling.
 - Require fresh off-host CI with the pass-boundary tests actually selected by the workflow, not merely compiled/filtered out.
 - This milestone is NOT Task 2 complete and does not satisfy the no-replay-in-block acceptance; Task 2b remains the owned Ctx/PageBuilder/Snap state and bounded block advance.
+
+## Task 2b-1: true in-pass plain-body checkpoint (isolated experiment)
+- **RED test:** 5f48f694b3f834da4b0acd123aaf46c42e42015f, GitHub Actions #44933608993. Checked expected missing layout_in_resumable_blocks API errors.
+- **GREEN target:** continuation::layout_in_resumable_blocks and pass::resume::PlainBlockSnapshot. Capture current page items, paragraph spacing, page/column positions and next-block cursor after each bounded batch. Rehydrate from source plus checkpoint in new LayoutCache, without running past blocks.
+- Scope explicitly rejects unsupported tables, inline objects/fields, notes, separate sections, headers, floats, numbering, columns, non-top vertical alignment and textboxes. This is a narrow proven vertical slice, not full Task 2b completion.
+- Compare full FVLW layout output for a 140-paragraph multi-page public fixture across 1/3/13/41 block batches and fresh caches. Verify wrong source/options and modified checkpoint are rejected.
+- Keep full PageBuilder/Ctx/Snap/column-balancing support and real Cloudflare Workers CPU tests as **subsequent work**. No claim of 10ms compliance; snapshot serialization may dominate CPU as output grows. No compression or production changes.
