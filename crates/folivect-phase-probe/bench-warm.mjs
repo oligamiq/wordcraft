@@ -1,0 +1,132 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import {pathToFileURL} from 'node:url';
+import {Worker, isMainThread, parentPort, workerData} from 'node:worker_threads';
+import {createHash} from 'node:crypto';
+import {performance} from 'node:perf_hooks';
+
+// Diagnostic only: independent Node workers emulate separately reused WASM
+// isolates. These are NOT Cloudflare billable CPU or a Wizer snapshot.
+const cpu = () => {
+  const {user, system} = process.threadCpuUsage();
+  return (user + system) / 1000;
+};
+const stamp = () => [cpu(), performance.now()];
+const elapsed = t => ({thread_ms:cpu()-t[0], wall_ms:performance.now()-t[1]});
+const golden = [
+  'cc5b14c69d663932ed4a74d75357d66d3222d4156f7b05300b06cc96e8b80f49',
+  'dbb7f2dcf262688e485a95bd1db55c247131eec244b5713b6d3962b7afbfa918',
+];
+const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+const stats = values => {
+  assert.equal(values.length,32);
+  const a=[...values].sort((x,y)=>x-y);
+  assert.ok(a.every(x=>Number.isFinite(x)&&x>=0));
+  return {n:a.length,mean:a.reduce((s,x)=>s+x,0)/a.length,p95:a[30],max:a[31]};
+};
+
+if (!isMainThread) {
+  const {role,module,glue} = workerData;
+  const api = await import(glue);
+  let t = stamp();
+  const instance = api.initSync({module});
+  const init = elapsed(t);
+  t = stamp();
+  api.prewarm_public_fonts();
+  const fonts = elapsed(t);
+  parentPort.postMessage({ready:true,role,init,fonts,memory_bytes:instance.memory.buffer.byteLength});
+  parentPort.on('message', ({id,fixture,packet}) => {
+    const phases={};
+    let doc, probe, bytes;
+    try {
+      const total=stamp();
+      let phase=stamp();
+      doc=api.DocumentProbe.from_fixture(fixture);
+      phases.document=elapsed(phase);
+      phase=stamp();
+      if (role === 'consumer') probe=doc.decode(3,packet);
+      else probe=doc.layout();
+      phases[role === 'consumer'?'decode':'layout']=elapsed(phase);
+      const pages=probe.pages();
+      phase=stamp();
+      bytes=role === 'producer'?probe.packet(3):probe.pdf();
+      phases[role === 'producer'?'encode':'pdf']=elapsed(phase);
+      phase=stamp();
+      probe.free();
+      doc.free();
+      probe=null;
+      doc=null;
+      phases.dispose=elapsed(phase);
+      phases.request=elapsed(total);
+      parentPort.postMessage({id,role,pages,phases,bytes},[bytes.buffer]);
+    } catch(e) {
+      try {probe?.free();doc?.free();} catch {}
+      parentPort.postMessage({id,error:String(e),stack:e?.stack});
+    }
+  });
+} else {
+  const dir = path.resolve(process.argv[2]);
+  assert.ok(fs.existsSync(path.join(dir,'folivect_phase_probe_bg.wasm')));
+  const module = new WebAssembly.Module(fs.readFileSync(path.join(dir,'folivect_phase_probe_bg.wasm')));
+  const glue=pathToFileURL(path.join(dir,'folivect_phase_probe.js')).href;
+  const workers={};
+  const setup={};
+  let nextId=0;
+  async function create(role) {
+    const worker = new Worker(new URL(import.meta.url),{workerData:{module,glue,role}});
+    const ready = await new Promise((resolve,reject)=>{
+      const onMessage=x=>{if(x.ready){worker.off('message',onMessage);resolve(x);}};
+      worker.on('message',onMessage);
+      worker.once('error',reject);
+      worker.once('exit',code=>{if(code!==0)reject(Error(`Worker ${role} exited ${code} before ready`));});
+    });
+    workers[role]=worker;
+    setup[role]=ready;
+    console.log('WASM_REUSED_ISOLATE_INIT',JSON.stringify(ready));
+  }
+  async function call(role,fixture,packet) {
+    const w=workers[role];
+    const id=++nextId;
+    return new Promise((resolve,reject)=>{
+      const onMessage=x=>{
+        if(x.id!==id)return;
+        w.off('message',onMessage);
+        if(x.error)reject(Error(x.error+'\n'+x.stack));
+        else resolve(x);
+      };
+      w.on('message',onMessage);
+      w.postMessage({id,fixture,packet});
+    });
+  }
+  try {
+    for(const role of ['producer','consumer','mono'])await create(role);
+    for(const fixture of [0,1]) {
+      const records={producer:[],consumer:[],mono:[]};
+      for(let i=-12;i<32;i++){
+        // Alternate the mono baseline relative to the two-stage pipeline.
+        let p,c,m;
+        if(i%2===0)m=await call('mono',fixture);
+        p=await call('producer',fixture);
+        c=await call('consumer',fixture,p.bytes);
+        if(i%2!==0)m=await call('mono',fixture);
+        for(const x of [p,c,m]){
+          assert.equal(x.pages,5);
+          if(x.role!=='producer')assert.equal(hash(x.bytes),golden[fixture],`PDF mismatch ${fixture}:${x.role}`);
+          if(i>=0)records[x.role].push(x.phases);
+        }
+      }
+      for(const role of ['producer','consumer','mono']){
+        const r=records[role];
+        assert.equal(r.length,32);
+        const phases=Object.fromEntries(Object.keys(r[0]).map(key=>[key,{
+          thread_ms:stats(r.map(x=>x[key].thread_ms)),
+          wall_ms:stats(r.map(x=>x[key].wall_ms)),
+        }]));
+        console.log('WASM_REUSED_ISOLATE_CPU',JSON.stringify({fixture,role,pages:5,sha256:golden[fixture],phases}));
+      }
+    }
+  } finally {
+    await Promise.all(Object.values(workers).map(w=>w.terminate()));
+  }
+}
