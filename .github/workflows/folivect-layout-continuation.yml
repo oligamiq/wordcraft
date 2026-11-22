@@ -1,7 +1,7 @@
 name: Folivect layout continuation envelope
 on:
   push:
-    branches: [folivect/layout-continuation-v1]
+    branches: [folivect/layout-continuation-v1, folivect/layout-continuation-baseline-20261122]
   workflow_dispatch:
 permissions:
   contents: read
@@ -21,4 +21,5 @@ jobs:
           cargo test --locked -p wordcraft-layout --features wire-layout-interned --lib continuation:: -- --nocapture
           cargo test --locked -p wordcraft-layout --features wire-layout-interned --lib block_batched_layout_preserves_multipass_pagination_and_exact_wire
           cargo test --locked -p wordcraft-layout --features wire-layout-interned --lib wire::
+          cargo test --locked -p wordcraft-layout --features wire-layout-interned --lib
           cargo test --locked -p wordcraft-layout --features wire-layout-interned --test wire_layout
