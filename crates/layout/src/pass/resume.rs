@@ -15,7 +15,7 @@ pub(crate) struct PlainBlockSnapshot {
     pub(crate) next_block: usize,
     #[serde(default)]
     pub(crate) page_base: usize,
-    pages: Vec<Page>,
+    pub(crate) pages: Vec<Page>,
     y: f32,
     top: f32,
     page_top: f32,
@@ -29,7 +29,7 @@ pub(crate) struct PlainBlockSnapshot {
     page_items_start: usize,
     block_marks: Vec<usize>,
     para_end: Option<(usize, usize, f32)>,
-    behind: Vec<usize>,
+    pub(crate) behind: Vec<usize>,
     max_y: f32,
     content_bottom: f32,
     ctx_page: u32,
