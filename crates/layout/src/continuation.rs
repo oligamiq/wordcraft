@@ -7,6 +7,9 @@ use sha2::{Digest, Sha256};
 mod collector;
 pub use collector::{CollectorAcceptance, PageDeltaCollector};
 
+#[cfg(test)]
+mod journal_tests;
+
 pub const MAX_PAYLOAD: usize = 16 * 1024 * 1024;
 const MAGIC: &[u8; 4] = b"FVLC";
 const VERSION: u8 = 1;
