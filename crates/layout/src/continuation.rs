@@ -11,6 +11,28 @@ pub use collector::{CollectorAcceptance, PageDeltaCollector};
 #[cfg(test)]
 mod journal_tests;
 
+// One codec for all private continuation checkpoints: MessagePack, with no
+// No payload fallback to other encodings. The FVLC envelope is unchanged.
+const CHECKPOINT_MARKER: &[u8; 4] = b"MPK1";
+
+fn checkpoint_to_bytes<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, ContinuationError> {
+    let mut bytes = CHECKPOINT_MARKER.to_vec();
+    value
+        .serialize(&mut rmp_serde::Serializer::new(&mut bytes).with_struct_map().with_human_readable())
+        .map_err(|_| ContinuationError::InvalidState)?;
+    Ok(bytes)
+}
+
+fn checkpoint_from_bytes<T: serde::de::DeserializeOwned>(input: &[u8]) -> Result<T, ContinuationError> {
+    let data = input.strip_prefix(CHECKPOINT_MARKER).ok_or(ContinuationError::InvalidState)?;
+    let mut decoder = rmp_serde::Deserializer::new(std::io::Cursor::new(data)).with_human_readable();
+    let value = T::deserialize(&mut decoder).map_err(|_| ContinuationError::InvalidState)?;
+    if decoder.get_ref().position() != data.len() as u64 {
+        return Err(ContinuationError::InvalidState);
+    }
+    Ok(value)
+}
+
 pub const MAX_PAYLOAD: usize = 16 * 1024 * 1024;
 const MAGIC: &[u8; 4] = b"FVLC";
 const VERSION: u8 = 1;
@@ -203,7 +225,7 @@ pub fn layout_one_pass(
             if envelope.cursor.phase != Phase::Paginating || envelope.cursor.section != 0 || envelope.cursor.block != 0 {
                 return Err(ContinuationError::InvalidState);
             }
-            let state: PassCheckpoint = serde_json::from_slice(&envelope.payload).map_err(|_| ContinuationError::InvalidState)?;
+            let state: PassCheckpoint = checkpoint_from_bytes(&envelope.payload)?;
             if state.passes != envelope.cursor.iteration || state.passes > MAX_TOTAL_PASSES as u32 || !state.totals.valid_checkpoint(sections.len()) {
                 return Err(ContinuationError::InvalidState);
             }
@@ -232,7 +254,7 @@ pub fn layout_one_pass(
                 return Err(ContinuationError::InvalidState);
             }
             let next = PassCheckpoint { totals, passes: next_pass };
-            let payload = serde_json::to_vec(&next).map_err(|_| ContinuationError::InvalidState)?;
+            let payload = checkpoint_to_bytes(&next)?;
             let envelope = ContinuationEnvelope {
                 source_digest,
                 options_digest,
@@ -283,7 +305,7 @@ pub fn layout_in_resumable_blocks(
             if envelope.cursor.phase != Phase::Paginating || envelope.cursor.iteration != 0 || envelope.cursor.section != 0 {
                 return Err(ContinuationError::InvalidState);
             }
-            let decoded: BlockCheckpoint = serde_json::from_slice(&envelope.payload).map_err(|_| ContinuationError::InvalidState)?;
+            let decoded: BlockCheckpoint = checkpoint_from_bytes(&envelope.payload)?;
             if decoded.schema != 1
                 || decoded.state.next_block == 0
                 || decoded.state.next_block >= doc.body.len()
@@ -300,7 +322,7 @@ pub fn layout_in_resumable_blocks(
         crate::pass::PlainStep::Continue(state) => {
             let block = u32::try_from(state.next_block).map_err(|_| ContinuationError::OutOfBounds)?;
             let checkpoint = BlockCheckpoint { schema: 1, state };
-            let payload = serde_json::to_vec(&checkpoint).map_err(|_| ContinuationError::InvalidState)?;
+            let payload = checkpoint_to_bytes(&checkpoint)?;
             let envelope = ContinuationEnvelope {
                 source_digest,
                 options_digest,
@@ -323,6 +345,22 @@ mod tests {
             cursor: Cursor { phase: Phase::Paginating, iteration: 2, section: 1, block: 4 },
             payload: vec![9, 8, 7],
         }
+    }
+
+    #[test]
+    fn checkpoint_uses_one_messagepack_format_and_rejects_json() {
+        let input = PassCheckpoint { totals: crate::cache::Totals::first_guess(2), passes: 3 };
+        let encoded = checkpoint_to_bytes(&input).expect("encode MessagePack checkpoint");
+        assert!(encoded.starts_with(CHECKPOINT_MARKER));
+        let restored: PassCheckpoint = checkpoint_from_bytes(&encoded).expect("decode MessagePack checkpoint");
+        assert_eq!(restored.passes, input.passes);
+        assert_eq!(restored.totals, input.totals);
+
+        let legacy = serde_json::to_vec(&input).unwrap();
+        assert!(checkpoint_from_bytes::<PassCheckpoint>(&legacy).is_err(), "must not mix checkpoint codecs");
+        let mut with_trailing = encoded;
+        with_trailing.push(0);
+        assert!(checkpoint_from_bytes::<PassCheckpoint>(&with_trailing).is_err(), "must reject trailing bytes");
     }
 
     #[test]
@@ -596,11 +634,12 @@ mod page_delta_tests {
                             pages.extend(chunk.pages);
                         }
                         let env = decode(&next, [31; 32], [47; 32], 1, doc.body.len() as u32).unwrap();
-                        let data: serde_json::Value = serde_json::from_slice(&env.payload).unwrap();
-                        assert_eq!(data["schema"], 2);
-                        assert_eq!(data["state"]["pages"].as_array().unwrap().len(), 1);
-                        assert_eq!(data["state"]["behind"].as_array().unwrap().len(), 1);
-                        assert_eq!(data["state"]["page_base"].as_u64().unwrap(), pages.len() as u64);
+                        assert!(env.payload.starts_with(CHECKPOINT_MARKER));
+                        let data: BlockDeltaCheckpoint = checkpoint_from_bytes(&env.payload).unwrap();
+                        assert_eq!(data.schema, 2);
+                        assert_eq!(data.state.pages.len(), 1);
+                        assert_eq!(data.state.behind.len(), 1);
+                        assert_eq!(data.state.page_base, pages.len());
                         checkpoint = Some(next);
                     }
                     PageDeltaStep::Complete { tail_wire, first_page } => {
@@ -682,7 +721,7 @@ pub fn layout_in_page_deltas(
             if env.cursor.phase != Phase::Paginating || env.cursor.iteration != 0 || env.cursor.section != 0 {
                 return Err(ContinuationError::InvalidState);
             }
-            let stored: BlockDeltaCheckpoint = serde_json::from_slice(&env.payload).map_err(|_| ContinuationError::InvalidState)?;
+            let stored: BlockDeltaCheckpoint = checkpoint_from_bytes(&env.payload)?;
             if stored.schema != 2
                 || stored.state.next_block == 0
                 || stored.state.next_block >= doc.body.len()
@@ -705,7 +744,7 @@ pub fn layout_in_page_deltas(
                 section: 0,
                 block: u32::try_from(state.next_block).map_err(|_| ContinuationError::OutOfBounds)?,
             };
-            let payload = serde_json::to_vec(&BlockDeltaCheckpoint { schema: 2, state }).map_err(|_| ContinuationError::InvalidState)?;
+            let payload = checkpoint_to_bytes(&BlockDeltaCheckpoint { schema: 2, state })?;
             let checkpoint = encode(&ContinuationEnvelope { source_digest, options_digest, cursor, payload })?;
             Ok(PageDeltaStep::Continue { sealed_page_wire, checkpoint, first_page })
         }

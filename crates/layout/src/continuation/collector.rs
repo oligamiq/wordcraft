@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use sha2::{Digest, Sha256};
 
-use super::{BlockDeltaCheckpoint, ContinuationError, PageDeltaStep, Phase, decode};
+use super::{BlockDeltaCheckpoint, ContinuationError, PageDeltaStep, Phase, checkpoint_from_bytes, decode};
 use crate::{DocLayout, Page, pass, wire};
 
 const MAX_PAGES: usize = 10_000;
@@ -100,7 +100,7 @@ impl PageDeltaCollector {
                 {
                     return Err(ContinuationError::InvalidState);
                 }
-                let state: BlockDeltaCheckpoint = serde_json::from_slice(&env.payload).map_err(|_| ContinuationError::InvalidState)?;
+                let state: BlockDeltaCheckpoint = checkpoint_from_bytes(&env.payload)?;
                 if state.schema != 2
                     || state.state.next_block != env.cursor.block as usize
                     || state.state.pages.len() != 1
