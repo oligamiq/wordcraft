@@ -13,11 +13,21 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+      - name: Pinned proofing language data
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: storytold/craft-i18n
+          ref: 9d6d54d6d9ff603cc41e12e5f6ba51af3554ab66
+          path: craft-i18n
+          sparse-checkout: language-data
+          persist-credentials: false
       - name: Native regression and envelope tests
         run: |
           set -euo pipefail
           rustup toolchain install 1.98.1 --profile minimal
           export RUSTUP_TOOLCHAIN=1.98.1 CARGO_BUILD_JOBS=2
+          test "$(cat craft-i18n.rev)" = 9d6d54d6d9ff603cc41e12e5f6ba51af3554ab66
+          export CRAFT_I18N_DIR="$GITHUB_WORKSPACE/craft-i18n" CRAFT_I18N_REQUIRED=1
           cargo test --locked -p wordcraft-layout --features wire-layout-interned --lib continuation:: -- --nocapture
           cargo test --locked -p wordcraft-layout --features wire-layout-interned --lib block_batched_layout_preserves_multipass_pagination_and_exact_wire
           cargo test --locked -p wordcraft-layout --features wire-layout-interned --lib wire::
