@@ -13,6 +13,8 @@ use wordcraft_doc::section::PageVAlign;
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct PlainBlockSnapshot {
     pub(crate) next_block: usize,
+    #[serde(default)]
+    pub(crate) page_base: usize,
     pages: Vec<Page>,
     y: f32,
     top: f32,
@@ -96,6 +98,7 @@ impl PlainBlockSnapshot {
     fn capture(pb: &PageBuilder<'_>, ctx: &Ctx<'_>, next_block: usize) -> Self {
         Self {
             next_block,
+            page_base: 0,
             pages: pb.pages.clone(),
             y: pb.y,
             top: pb.top,
@@ -126,7 +129,8 @@ impl PlainBlockSnapshot {
         if self.next_block == 0
             || self.next_block >= doc.body.len()
             || self.pages.len() != self.behind.len()
-            || self.pages.len() > 10_000
+            || self.page_base.checked_add(self.pages.len()).is_none_or(|total| total > 10_000)
+            || (self.page_base > 0 && self.pages.len() != 1)
             || !valid_positions
             || !valid_prev
             || !valid_end
@@ -143,7 +147,8 @@ impl PlainBlockSnapshot {
     }
 
     fn restore<'p>(self, pb: &mut PageBuilder<'p>, ctx: &mut Ctx<'_>) {
-        pb.pages = self.pages;
+        pb.pages = vec![Page::default(); self.page_base];
+        pb.pages.extend(self.pages);
         pb.y = self.y;
         pb.top = self.top;
         pb.page_top = self.page_top;
@@ -157,7 +162,8 @@ impl PlainBlockSnapshot {
         pb.page_items_start = self.page_items_start;
         pb.block_marks = self.block_marks;
         pb.para_end = self.para_end;
-        pb.behind = self.behind;
+        pb.behind = vec![0; self.page_base];
+        pb.behind.extend(self.behind);
         pb.max_y = self.max_y;
         pb.content_bottom = self.content_bottom;
         ctx.fields.page = self.ctx_page;
@@ -240,4 +246,42 @@ pub(crate) fn step(
     }
     evict_unused(ctx.cache);
     Ok(PlainStep::Complete(DocLayout { index: index_lines(&pages), pages, ms: 0.0, text_boxes: 0 }))
+}
+
+/// Newly sealed pages are returned once. The checkpoint retains only the
+/// editable page; previous page indices are rebuilt as empty in-memory slots.
+pub(crate) enum PlainDeltaStep {
+    Continue { sealed: Vec<Page>, state: PlainBlockSnapshot, first_page: usize },
+    Complete { pages: Vec<Page>, first_page: usize },
+}
+
+pub(crate) fn step_delta(
+    doc: &Document,
+    cache: &mut LayoutCache,
+    opts: &LayoutOptions,
+    saved: Option<PlainBlockSnapshot>,
+    max_blocks: usize,
+) -> Result<PlainDeltaStep, ContinuationError> {
+    let first_page = saved.as_ref().map_or(0, |s| s.page_base);
+    match step(doc, cache, opts, saved, max_blocks)? {
+        PlainStep::Continue(mut state) => {
+            let new_page_base = state.pages.len().checked_sub(1).ok_or(ContinuationError::InvalidState)?;
+            if first_page > new_page_base {
+                return Err(ContinuationError::InvalidState);
+            }
+            let mut pages = state.pages.split_off(first_page);
+            let active = pages.pop().ok_or(ContinuationError::InvalidState)?;
+            let last_behind = *state.behind.last().ok_or(ContinuationError::InvalidState)?;
+            state.pages = vec![active];
+            state.behind = vec![last_behind];
+            state.page_base = new_page_base;
+            Ok(PlainDeltaStep::Continue { sealed: pages, state, first_page })
+        }
+        PlainStep::Complete(layout) => {
+            if first_page > layout.pages.len() {
+                return Err(ContinuationError::InvalidState);
+            }
+            Ok(PlainDeltaStep::Complete { pages: layout.pages.into_iter().skip(first_page).collect(), first_page })
+        }
+    }
 }

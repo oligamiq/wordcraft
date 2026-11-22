@@ -632,3 +632,76 @@ mod page_delta_tests {
         ));
     }
 }
+
+/// An incremental page packet at a complete body-block boundary.
+/// Both packet forms use the canonical FVLW v1 page representation.
+/// Assemble these typed pages in order before FVLW v3 or PDF finalization.
+pub enum PageDeltaStep {
+    Continue { sealed_page_wire: Option<Vec<u8>>, checkpoint: Vec<u8>, first_page: usize },
+    Complete { tail_wire: Vec<u8>, first_page: usize },
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct BlockDeltaCheckpoint {
+    schema: u32,
+    state: crate::pass::PlainBlockSnapshot,
+}
+
+/// Advances the plain-body subset without resending already sealed page bodies.
+/// A prior page is immutable after a later page opens in this restricted mode;
+/// only the active page is present in the FVLC checkpoint. The caller persists
+/// emitted FVLW page packets and assembles a complete layout before final PDF.
+/// No CPU-limit guarantee or support for columns, notes, floats or totals yet.
+pub fn layout_in_page_deltas(
+    doc: &crate::Document,
+    cache: &mut crate::LayoutCache,
+    opts: &crate::LayoutOptions,
+    checkpoint: Option<&[u8]>,
+    source_digest: [u8; 32],
+    options_digest: [u8; 32],
+    max_blocks: usize,
+) -> Result<PageDeltaStep, ContinuationError> {
+    if max_blocks == 0 {
+        return Err(ContinuationError::OutOfBounds);
+    }
+    if !crate::pass::plain_supported(doc, opts) {
+        return Err(ContinuationError::Unsupported);
+    }
+    let saved = match checkpoint {
+        None => None,
+        Some(bytes) => {
+            let len = u32::try_from(doc.body.len()).map_err(|_| ContinuationError::OutOfBounds)?;
+            let env = decode(bytes, source_digest, options_digest, 1, len)?;
+            if env.cursor.phase != Phase::Paginating || env.cursor.iteration != 0 || env.cursor.section != 0 {
+                return Err(ContinuationError::InvalidState);
+            }
+            let stored: BlockDeltaCheckpoint = serde_json::from_slice(&env.payload).map_err(|_| ContinuationError::InvalidState)?;
+            if stored.schema != 2
+                || stored.state.next_block == 0
+                || stored.state.next_block >= doc.body.len()
+                || stored.state.next_block != env.cursor.block as usize
+            {
+                return Err(ContinuationError::InvalidState);
+            }
+            Some(stored.state)
+        }
+    };
+
+    let packet =
+        |pages: Vec<crate::Page>| crate::wire::encode(&crate::DocLayout { pages, ..Default::default() }).map_err(|_| ContinuationError::PayloadSize);
+    match crate::pass::step_plain_delta(doc, cache, opts, saved, max_blocks)? {
+        crate::pass::PlainDeltaStep::Continue { sealed, state, first_page } => {
+            let sealed_page_wire = if sealed.is_empty() { None } else { Some(packet(sealed)?) };
+            let cursor = Cursor {
+                phase: Phase::Paginating,
+                iteration: 0,
+                section: 0,
+                block: u32::try_from(state.next_block).map_err(|_| ContinuationError::OutOfBounds)?,
+            };
+            let payload = serde_json::to_vec(&BlockDeltaCheckpoint { schema: 2, state }).map_err(|_| ContinuationError::InvalidState)?;
+            let checkpoint = encode(&ContinuationEnvelope { source_digest, options_digest, cursor, payload })?;
+            Ok(PageDeltaStep::Continue { sealed_page_wire, checkpoint, first_page })
+        }
+        crate::pass::PlainDeltaStep::Complete { pages, first_page } => Ok(PageDeltaStep::Complete { tail_wire: packet(pages)?, first_page }),
+    }
+}

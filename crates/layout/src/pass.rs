@@ -3,7 +3,9 @@ use std::collections::VecDeque;
 #[cfg(feature = "wire-layout-interned")]
 mod resume;
 #[cfg(feature = "wire-layout-interned")]
-pub(crate) use resume::{PlainBlockSnapshot, PlainStep, step as step_plain, supported as plain_supported};
+pub(crate) use resume::{
+    PlainBlockSnapshot, PlainDeltaStep, PlainStep, step as step_plain, step_delta as step_plain_delta, supported as plain_supported,
+};
 #[cfg(all(feature = "wire-layout-interned", test))]
 pub(crate) use resume::{reset_placed_visits, take_placed_visits};
 
