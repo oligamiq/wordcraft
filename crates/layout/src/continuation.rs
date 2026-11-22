@@ -705,3 +705,94 @@ pub fn layout_in_page_deltas(
         crate::pass::PlainDeltaStep::Complete { pages, first_page } => Ok(PageDeltaStep::Complete { tail_wire: packet(pages)?, first_page }),
     }
 }
+
+// Stage 2b-3: reject stale/out-of-order page deliveries and accept exact retries.
+#[cfg(test)]
+mod collector_tests {
+    use super::*;
+    use crate::{LayoutCache, LayoutOptions, layout, wire};
+    use wordcraft_doc::Document;
+
+    fn source() -> Document {
+        let mut doc = Document::from_text(&"Long enough to create multiple page breaks.\n".repeat(210));
+        doc.styles.default_chr.font = Some("Source Sans 3".into());
+        doc
+    }
+
+    fn responses(doc: &Document, opts: &LayoutOptions) -> Vec<(Option<Vec<u8>>, PageDeltaStep)> {
+        let mut next = None;
+        let mut result = Vec::new();
+        loop {
+            let response = layout_in_page_deltas(doc, &mut LayoutCache::new(), opts, next.as_deref(), [31; 32], [47; 32], 19).unwrap();
+            let done = matches!(response, PageDeltaStep::Complete { .. });
+            let incoming = next.clone();
+            next = match &response {
+                PageDeltaStep::Continue { checkpoint, .. } => Some(checkpoint.clone()),
+                PageDeltaStep::Complete { .. } => None,
+            };
+            result.push((incoming, response));
+            if done {
+                break;
+            }
+        }
+        result
+    }
+
+    #[test]
+    fn duplicate_and_out_of_order_delivery_are_safe_and_final_layout_is_exact() {
+        let doc = source();
+        let opts = LayoutOptions::default();
+        let reference = layout(&doc, &mut LayoutCache::new(), &opts);
+        let events = responses(&doc, &opts);
+        assert!(events.len() > 4);
+        let mut collector = PageDeltaCollector::new([31; 32], [47; 32], doc.body.len() as u32);
+
+        assert_eq!(collector.apply(events[0].0.as_deref(), &events[0].1), Ok(CollectorAcceptance::Applied));
+        assert_eq!(collector.apply(events[0].0.as_deref(), &events[0].1), Ok(CollectorAcceptance::Duplicate));
+        assert_eq!(collector.apply(events[2].0.as_deref(), &events[2].1), Err(ContinuationError::InvalidState));
+        assert_eq!(collector.apply(events[1].0.as_deref(), &events[1].1), Ok(CollectorAcceptance::Applied));
+        assert_eq!(collector.apply(events[0].0.as_deref(), &events[0].1), Ok(CollectorAcceptance::Duplicate));
+
+        for (before, step) in &events[2..] {
+            assert_eq!(collector.apply(before.as_deref(), step), Ok(CollectorAcceptance::Applied));
+        }
+        assert!(collector.is_complete());
+        for (before, step) in events.iter().rev() {
+            assert_eq!(collector.apply(before.as_deref(), step), Ok(CollectorAcceptance::Duplicate));
+        }
+        let final_layout = collector.into_layout().unwrap();
+        assert_eq!(final_layout.index, reference.index);
+        assert_eq!(wire::encode(&final_layout).unwrap(), wire::encode(&reference).unwrap());
+        assert_eq!(wire::encode_interned(&final_layout).unwrap(), wire::encode_interned(&reference).unwrap());
+    }
+
+    #[test]
+    fn rejects_conflicting_retries_and_bad_packet_without_mutating_collector() {
+        let doc = source();
+        let opts = LayoutOptions::default();
+        let events = responses(&doc, &opts);
+        let mut collector = PageDeltaCollector::new([31; 32], [47; 32], doc.body.len() as u32);
+        let (first_before, first) = &events[0];
+        assert_eq!(collector.apply(first_before.as_deref(), first), Ok(CollectorAcceptance::Applied));
+        let original_count = collector.page_count();
+
+        if let PageDeltaStep::Continue { sealed_page_wire, checkpoint, first_page } = first {
+            let mut bad = checkpoint.clone();
+            *bad.last_mut().unwrap() ^= 0x8;
+            let corrupt = PageDeltaStep::Continue { sealed_page_wire: sealed_page_wire.clone(), checkpoint: bad, first_page: *first_page };
+            assert_eq!(collector.apply(first_before.as_deref(), &corrupt), Err(ContinuationError::InvalidState));
+            assert_eq!(collector.page_count(), original_count);
+        } else {
+            panic!("first step must be partial")
+        }
+
+        for (before, step) in events.iter().skip(1) {
+            assert_eq!(collector.apply(before.as_deref(), step), Ok(CollectorAcceptance::Applied));
+        }
+        assert!(collector.is_complete());
+        let count = collector.page_count();
+        let fake = PageDeltaStep::Complete { tail_wire: wire::encode(&crate::DocLayout::default()).unwrap(), first_page: count };
+        assert_eq!(collector.apply(events.last().unwrap().0.as_deref(), &fake), Err(ContinuationError::InvalidState));
+        assert_eq!(collector.page_count(), count);
+    }
+}
