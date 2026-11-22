@@ -550,3 +550,85 @@ mod block_boundary_tests {
         ));
     }
 }
+
+// Stage 2b-2. Sealed pages move exactly once; the FVLC cursor owns only the open page.
+#[cfg(test)]
+mod page_delta_tests {
+    use super::*;
+    use crate::{DocLayout, LayoutCache, LayoutOptions, layout, pass, wire};
+    use wordcraft_doc::Document;
+
+    fn fixture() -> Document {
+        let mut doc = Document::from_text(&"An ordinary paragraph taking a page line.\n".repeat(220));
+        doc.styles.default_chr.font = Some("Source Sans 3".into());
+        doc
+    }
+
+    #[test]
+    fn streamed_sealed_pages_match_whole_layout_and_checkpoint_has_only_open_page() {
+        let doc = fixture();
+        let opts = LayoutOptions::default();
+        let reference = layout(&doc, &mut LayoutCache::new(), &opts);
+        let expected_v1 = wire::encode(&reference).unwrap();
+        let expected_v3 = wire::encode_interned(&reference).unwrap();
+        assert!(reference.pages.len() >= 3, "fixture must span pages");
+        for batch_size in [1, 5, 17, 73] {
+            pass::reset_placed_visits();
+            let mut checkpoint: Option<Vec<u8>> = None;
+            let mut pages = Vec::new();
+            let mut complete = false;
+            for _ in 0..=doc.body.len() {
+                let output =
+                    layout_in_page_deltas(&doc, &mut LayoutCache::new(), &opts, checkpoint.as_deref(), [31; 32], [47; 32], batch_size).unwrap();
+                match output {
+                    PageDeltaStep::Continue { sealed_page_wire, checkpoint: next, first_page } => {
+                        assert_eq!(first_page, pages.len());
+                        if let Some(packet) = sealed_page_wire {
+                            let chunk = wire::decode(&packet).unwrap();
+                            assert!(!chunk.pages.is_empty());
+                            pages.extend(chunk.pages);
+                        }
+                        let env = decode(&next, [31; 32], [47; 32], 1, doc.body.len() as u32).unwrap();
+                        let data: serde_json::Value = serde_json::from_slice(&env.payload).unwrap();
+                        assert_eq!(data["schema"], 2);
+                        assert_eq!(data["state"]["pages"].as_array().unwrap().len(), 1);
+                        assert_eq!(data["state"]["behind"].as_array().unwrap().len(), 1);
+                        assert_eq!(data["state"]["page_base"].as_u64().unwrap(), pages.len() as u64);
+                        checkpoint = Some(next);
+                    }
+                    PageDeltaStep::Complete { tail_wire, first_page } => {
+                        assert_eq!(first_page, pages.len());
+                        pages.extend(wire::decode(&tail_wire).unwrap().pages);
+                        complete = true;
+                        break;
+                    }
+                }
+            }
+            assert!(complete);
+            assert_eq!(pass::take_placed_visits(), (0..doc.body.len()).collect::<Vec<_>>());
+            let result = DocLayout { index: pass::index_lines(&pages), pages, ..Default::default() };
+            assert_eq!(result.index, reference.index);
+            assert_eq!(wire::encode(&result).unwrap(), expected_v1);
+            assert_eq!(wire::encode_interned(&result).unwrap(), expected_v3);
+        }
+    }
+
+    #[test]
+    fn page_delta_rejects_wrong_digest_and_forged_cursor() {
+        let doc = fixture();
+        let opts = LayoutOptions::default();
+        let first = layout_in_page_deltas(&doc, &mut LayoutCache::new(), &opts, None, [31; 32], [47; 32], 1).unwrap();
+        let PageDeltaStep::Continue { checkpoint, .. } = first else { panic!("expected continuation") };
+        assert!(matches!(
+            layout_in_page_deltas(&doc, &mut LayoutCache::new(), &opts, Some(&checkpoint), [32; 32], [47; 32], 1),
+            Err(ContinuationError::WrongSource)
+        ));
+        let mut envelope = decode(&checkpoint, [31; 32], [47; 32], 1, doc.body.len() as u32).unwrap();
+        envelope.cursor.block += 1;
+        let forged = encode(&envelope).unwrap();
+        assert!(matches!(
+            layout_in_page_deltas(&doc, &mut LayoutCache::new(), &opts, Some(&forged), [31; 32], [47; 32], 1),
+            Err(ContinuationError::InvalidState)
+        ));
+    }
+}
