@@ -5,6 +5,7 @@
 use sha2::{Digest, Sha256};
 
 mod collector;
+mod journal;
 pub use collector::{CollectorAcceptance, PageDeltaCollector};
 
 #[cfg(test)]

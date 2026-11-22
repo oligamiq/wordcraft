@@ -29,6 +29,7 @@ pub struct PageDeltaCollector {
     current_checkpoint: Option<Vec<u8>>,
     receipts: BTreeMap<[u8; 32], [u8; 32]>,
     last_block: u32,
+    generation: u64,
     total_wire_bytes: usize,
     complete: bool,
 }
@@ -43,6 +44,7 @@ impl PageDeltaCollector {
             current_checkpoint: None,
             receipts: BTreeMap::new(),
             last_block: 0,
+            generation: 0,
             total_wire_bytes: 0,
             complete: false,
         }
@@ -50,6 +52,9 @@ impl PageDeltaCollector {
 
     pub fn page_count(&self) -> usize {
         self.pages.len()
+    }
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
     pub fn is_complete(&self) -> bool {
         self.complete
@@ -140,12 +145,14 @@ impl PageDeltaCollector {
             return Err(ContinuationError::InvalidState);
         }
 
+        let next_generation = self.generation.checked_add(1).ok_or(ContinuationError::OutOfBounds)?;
         // Commit as one mutation after validation; failed delivery changes nothing.
         self.pages.extend(new_pages);
         self.current_checkpoint = next_checkpoint;
         self.last_block = next_block;
         self.total_wire_bytes = wire_bytes;
         self.complete = is_complete;
+        self.generation = next_generation;
         self.receipts.insert(key, value);
         Ok(CollectorAcceptance::Applied)
     }
@@ -199,4 +206,49 @@ fn response_digest(response: &PageDeltaStep) -> [u8; 32] {
         }
     }
     h.finalize().into()
+}
+
+impl PageDeltaCollector {
+    /// Encodes one immutable commit candidate for a durable append-only store.
+    /// The actual storage system must atomically compare its generation and
+    /// append this record; an in-memory generation is NOT distributed CAS.
+    pub fn encode_journal_record(&self, predecessor: Option<&[u8]>, step: &PageDeltaStep) -> Result<Vec<u8>, ContinuationError> {
+        super::journal::encode(self.generation, self.source_digest, self.options_digest, predecessor, step)
+    }
+
+    /// Replays one authenticated-by-the-caller record and checks its revision.
+    /// Identical historical replays are read-only; stale divergent writes fail.
+    pub fn apply_journal_record(&mut self, bytes: &[u8]) -> Result<CollectorAcceptance, ContinuationError> {
+        let record = super::journal::decode(bytes, self.source_digest, self.options_digest)?;
+        if record.generation != self.generation {
+            let previous_key = predecessor_key(record.predecessor.as_deref());
+            let response_key = response_digest(&record.step);
+            return if self.receipts.get(&previous_key) == Some(&response_key) {
+                Ok(CollectorAcceptance::Duplicate)
+            } else {
+                Err(ContinuationError::InvalidState)
+            };
+        }
+        self.apply(record.predecessor.as_deref(), &record.step)
+    }
+
+    /// Rebuild from unique ordered immutable records read from a trusted store.
+    /// Reopening a process does not imply the store's append/CAS was atomic.
+    pub fn replay_journal(
+        source_digest: [u8; 32],
+        options_digest: [u8; 32],
+        block_limit: u32,
+        records: &[Vec<u8>],
+    ) -> Result<Self, ContinuationError> {
+        if records.len() > MAX_RECEIPTS {
+            return Err(ContinuationError::OutOfBounds);
+        }
+        let mut out = Self::new(source_digest, options_digest, block_limit);
+        for record in records {
+            if out.apply_journal_record(record)? != CollectorAcceptance::Applied {
+                return Err(ContinuationError::InvalidState);
+            }
+        }
+        Ok(out)
+    }
 }
